@@ -1,0 +1,5 @@
+# Global app configuration
+
+screen_width = 1280
+screen_height = 720
+vsync = yes
