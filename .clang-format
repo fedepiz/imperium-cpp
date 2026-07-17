@@ -1,0 +1,42 @@
+# imperium-cpp — enforces the formatting rules in CLAUDE.md.
+BasedOnStyle: LLVM
+Standard: Latest
+
+# Braces on the same line, 4-space indent, no tabs.
+BreakBeforeBraces: Attach
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# Module namespace blocks don't add an indentation level.
+NamespaceIndentation: None
+FixNamespaceComments: true
+
+# Pointers and references bind to the type: Entity* entity, T& value.
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# Include order is load-bearing (dependency order, platform blocks) — never reorder.
+SortIncludes: Never
+
+# Aligned columns for struct members, alias blocks, macros, and trailing
+# comments, as in the guide's samples.
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveMacros: Consecutive
+AlignTrailingComments: true
+
+# Small definitions stay on one line (arena::push-style one-liners),
+# and `template <typename T>` stays on the same line as the declaration.
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Always
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLoopsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: No
+SpaceAfterTemplateKeyword: true
+
+IndentCaseLabels: true
+MaxEmptyLinesToKeep: 1

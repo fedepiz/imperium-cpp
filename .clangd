@@ -1,0 +1,27 @@
+# clangd config — applies the build flags from CLAUDE.md to every module .cpp,
+# so each self-sufficient module is checked standalone with the same rules
+# build.sh compiles with. Composes with compile_commands.json once that exists.
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - -std=c++20
+    - -fno-exceptions
+    - -fno-rtti
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-error=unused-variable
+    # Check the debug configuration: with these off, LOG/ASSERT arguments
+    # vanish from the AST and the editor never type-checks them.
+    - -DASSERT_ENABLE
+    - -DLOG_ENABLE
+
+Diagnostics:
+  # Include-cleaner heuristics fight the unity layout (modules include modules,
+  # symbols arrive transitively by design) — keep them off.
+  # NOTE: when clangd is upgraded to 17+, also add `MissingIncludes: None` here.
+  UnusedIncludes: None
+  ClangTidy:
+    # Modules define functions in .hpp by design (single-file modules, one TU
+    # per binary) — this check exists to complain about exactly that.
+    Remove: [misc-definitions-in-headers]
