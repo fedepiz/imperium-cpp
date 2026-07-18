@@ -59,12 +59,23 @@ using usize = std::size_t;
 #define LOG(fmt, ...) ((void)0)
 #endif
 
+// Small generic utilities — shallow, call-site obvious.
+
+template <typename T> fn T min(T a, T b) { return a < b ? a : b; }
+template <typename T> fn T max(T a, T b) { return a > b ? a : b; }
+template <typename T> fn T clamp(T value, T low, T high) { return value < low ? low : (value > high ? high : value); }
+
 // Basic aggregate types: arrays and slices
 
 template <typename T, const usize N> struct Array {
     T data[N];
 
-    T& operator[](usize idx) const {
+    T& operator[](usize idx) {
+        ASSERT(idx < N);
+        return this->data[idx];
+    }
+
+    const T& operator[](usize idx) const {
         ASSERT(idx < N);
         return this->data[idx];
     }

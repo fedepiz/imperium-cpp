@@ -8,10 +8,6 @@ cd "$(dirname "$0")"
 # raylib — its own Makefile; produces raylib/src/libraylib.a
 make -C raylib/src PLATFORM=PLATFORM_DESKTOP
 
-# clay — header-only; instantiate the implementation once
-mkdir -p build
-clang -std=c99 -O2 -c clay_impl.c -o build/clay_impl.o
-
 # merge everything into the one archive
-libtool -static -o third_party.a raylib/src/libraylib.a build/clay_impl.o
+libtool -static -o third_party.a raylib/src/libraylib.a
 echo "ok: third_party/third_party.a"

@@ -1,5 +1,7 @@
 #pragma once
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h> // vsnprintf only — the sanctioned formatting backend (CLAUDE.md)
 
 #include "core.hpp"
 #include "arena.hpp"
@@ -24,10 +26,35 @@ fn bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
 } // namespace
 
+// printf-style formatting into an arena string. String arguments go through
+// the length-prefix idiom: format(a, "%.*s!", (int)s.len, s.data). The
+// two-pass vsnprintf measures first, so the result is never truncated.
+fn String format(arena::Arena* arena, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    va_list measure_args;
+    va_copy(measure_args, args);
+    int len = vsnprintf(0, 0, fmt, measure_args);
+    va_end(measure_args);
+    if (len <= 0) {
+        va_end(args);
+        return {}; // ZII: encoding error or empty result -> empty string
+    }
+    char* data = (char*)arena::allocate_raw(arena, (usize)len + 1, 1); // +1: vsnprintf's terminator
+    if (data) vsnprintf(data, (usize)len + 1, fmt, args);
+    va_end(args);
+    if (!data) return {}; // ZII: arena full
+    return {(usize)len, data};
+}
+
 fn bool equals(String a, String b) {
     if (a.len != b.len) return false;
     if (a.len == 0) return true;
     return memcmp(a.data, b.data, a.len) == 0;
+}
+
+fn b32 starts_with(String s, String prefix) {
+    return s.len >= prefix.len && (prefix.len == 0 || memcmp(s.data, prefix.data, prefix.len) == 0);
 }
 
 struct ParseF32Result {

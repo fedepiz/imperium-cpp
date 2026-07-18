@@ -1,6 +1,6 @@
 # clangd config — applies the build flags from CLAUDE.md to every module .cpp,
 # so each self-sufficient module is checked standalone with the same rules
-# build.sh compiles with. Composes with compile_commands.json once that exists.
+# x.sh compiles with. Composes with compile_commands.json once that exists.
 CompileFlags:
   Compiler: clang++
   Add:
@@ -11,6 +11,13 @@ CompileFlags:
     - -Wextra
     - -Werror
     - -Wno-error=unused-variable
+    # Warning flags are order-dependent, and these Add flags land AFTER the
+    # compile_commands.json ones — re-adding -Wextra above would re-enable
+    # warnings the build scripts disable, so the -Wno-s must repeat here too
+    # (same rationale as x.bat/x.sh: partial and out-of-order
+    # designated init are ZII house style).
+    - -Wno-missing-designated-field-initializers
+    - -Wno-reorder-init-list
     # Check the debug configuration: with these off, LOG/ASSERT arguments
     # vanish from the AST and the editor never type-checks them.
     - -DASSERT_ENABLE

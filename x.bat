@@ -1,9 +1,9 @@
 @echo off
-rem build.bat -- Windows counterpart of build.sh; keep the two behaviourally in
+rem x.bat -- Windows counterpart of x.sh; keep the two behaviourally in
 rem sync. One clang++ invocation per root binary; modules (.hpp) are included
 rem by roots (.cpp); only roots are compiled.
 rem
-rem Usage: build.bat [command] [--release] [--debug]
+rem Usage: x.bat [command] [--release] [--debug]
 rem   clean        remove build artifacts
 rem   build        build all roots (default command; runs third_party first when necessary)
 rem   run          build if out of date, then run the game
@@ -33,7 +33,9 @@ rem -D_CRT_SECURE_NO_WARNINGS: windows-only addition -- MSVC's CRT marks
 rem fopen/strerror deprecated, which -Werror would otherwise turn fatal.
 rem -Wno-missing-designated-field-initializers: clang 21 warning not in Apple
 rem clang; partial designated init with the rest zeroed is our ZII style.
-set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused-variable -Wno-missing-designated-field-initializers -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src -Ithird_party/clay"
+rem -Wno-reorder-init-list: out-of-order designated init is our style (ZII
+rem PODs; field order at the call site follows meaning, not declaration).
+set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused-variable -Wno-missing-designated-field-initializers -Wno-reorder-init-list -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src"
 if !RELEASE!==1 (
     set "FLAGS=!BASE_FLAGS! -O2"
     set "PROFILE=release"
@@ -93,8 +95,8 @@ rem ------------------------------------------------------------ subroutines
 :third_party_if_needed
 rem Vendored library sources are effectively frozen -- staleness only tracks
 rem our own third_party files. After editing vendored code, run
-rem `build.bat third_party` by hand.
-powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; if((Get-Item 'third_party/clay_impl.c').LastWriteTime -gt $t){exit 0}; exit 1"
+rem `x.bat third_party` by hand.
+powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; exit 1"
 if !errorlevel! EQU 0 (
     call third_party\build.bat
     if errorlevel 1 exit /b 1
@@ -103,7 +105,7 @@ exit /b 0
 
 :build_needed
 rem Sets NEEDED=1 when any root binary is missing, the flag stamp changed, or
-rem sources / build.bat / third_party.a are newer than the game binary.
+rem sources / x.bat / third_party.a are newer than the game binary.
 set NEEDED=0
 if not exist !STAMP! set NEEDED=1
 if !NEEDED!==0 (
@@ -112,7 +114,8 @@ if !NEEDED!==0 (
     if not "!STAMPVAL!"=="!FLAGS!" set NEEDED=1
 )
 if !NEEDED!==0 (
-    powershell -NoProfile -Command "$bin='build/imperium.exe'; if(-not(Test-Path $bin)){exit 0}; foreach($r in (Get-ChildItem src -Filter *.cpp)){ if($r.Name -eq 'ray.cpp'){continue}; $n=$r.BaseName; if($n -eq 'main'){$n='imperium'}; if(-not(Test-Path ('build/'+$n+'.exe'))){exit 0} }; $bt=(Get-Item $bin).LastWriteTime; if(Get-ChildItem src\* -Include *.cpp,*.hpp | Where-Object {$_.LastWriteTime -gt $bt}){exit 0}; if((Get-Item 'build.bat').LastWriteTime -gt $bt){exit 0}; if((Test-Path 'third_party/third_party.a') -and ((Get-Item 'third_party/third_party.a').LastWriteTime -gt $bt)){exit 0}; exit 1"
+    rem sources are scanned recursively: modules may live in subdirs (src/ui/...)
+    powershell -NoProfile -Command "$bin='build/imperium.exe'; if(-not(Test-Path $bin)){exit 0}; foreach($r in (Get-ChildItem src -Filter *.cpp)){ if($r.Name -eq 'ray.cpp'){continue}; $n=$r.BaseName; if($n -eq 'main'){$n='imperium'}; if(-not(Test-Path ('build/'+$n+'.exe'))){exit 0} }; $bt=(Get-Item $bin).LastWriteTime; if(Get-ChildItem src -Recurse -Include *.cpp,*.hpp | Where-Object {$_.LastWriteTime -gt $bt}){exit 0}; if((Get-Item 'x.bat').LastWriteTime -gt $bt){exit 0}; if((Test-Path 'third_party/third_party.a') -and ((Get-Item 'third_party/third_party.a').LastWriteTime -gt $bt)){exit 0}; exit 1"
     if !errorlevel! EQU 0 set NEEDED=1
 )
 exit /b 0
@@ -152,5 +155,6 @@ rem compile_commands.json -- one entry per src file, always the default
 rem profile, so clangd checks every module standalone against the config most
 rem code runs in. -x c++ makes clangd treat module .hpp files as TUs.
 set "CC_FLAGS=!BASE_FLAGS! -O1 -DASSERT_ENABLE -DLOG_ENABLE"
-powershell -NoProfile -Command "$flags='!CC_FLAGS!'; $dir=(Get-Location).Path -replace '\\','/'; $files=@(Get-ChildItem src -Filter *.cpp)+@(Get-ChildItem src -Filter *.hpp); $entries=foreach($f in $files){ $p='src/'+$f.Name; if($p -like '*.hpp'){$cmd='clang++ -x c++ '+$flags+' -c '+$p}else{$cmd='clang++ '+$flags+' -c '+$p}; [pscustomobject]@{directory=$dir; file=$p; command=$cmd} }; [IO.File]::WriteAllText($dir+'/compile_commands.json',(ConvertTo-Json @($entries)))"
+rem src is scanned recursively so modules in subdirs (src/ui/...) get entries.
+powershell -NoProfile -Command "$flags='!CC_FLAGS!'; $dir=(Get-Location).Path -replace '\\','/'; $files=Get-ChildItem src -Recurse -Include *.cpp,*.hpp; $entries=foreach($f in $files){ $p=$f.FullName.Substring((Get-Location).Path.Length+1) -replace '\\','/'; if($p -like '*.hpp'){$cmd='clang++ -x c++ '+$flags+' -c '+$p}else{$cmd='clang++ '+$flags+' -c '+$p}; [pscustomobject]@{directory=$dir; file=$p; command=$cmd} }; [IO.File]::WriteAllText($dir+'/compile_commands.json',(ConvertTo-Json @($entries)))"
 exit /b 0

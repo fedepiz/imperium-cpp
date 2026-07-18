@@ -1,0 +1,113 @@
+# The game screen, as data. Press R in-game to hot-reload this file and
+# data/style.txt. (The old layout-engine stress test lives in ui_lab.txt —
+# copy it over this file to run it.)
+#
+# Sizes are cap[:weight]: elements start at their content, grow by weight
+# (default 1), and stop at the cap. `width = 200` = grow up to 200;
+# `grow` = uncapped; `fit` = weight 0; `50%` = capped at half the parent.
+
+# The interaction window: modal choice. The game binds $INTERACTION
+# only while one is open; unbound hides the whole panel.
+panel = {
+	x_pos = 0.5
+	y_pos = 0.5
+	width = 800
+	border = yes
+	visible = "$INTERACTION"
+
+	heading = "$INT_TITLE"
+	label = {
+		text = "$INT_TEXT"
+		wrap = yes
+		width = 100%
+	}
+	list = {
+		id = "choices"
+		width = grow
+		template = {
+			button = { action = "choose $INDEX" text = "$CHOICE" width = grow enabled = "$ENABLED" }
+		}
+	}
+}
+
+# Bottom panel
+panel = {
+	id = "bottom_panel"
+
+	x_pos = 0
+	y_pos = 0.99
+
+	width = 100%
+	height = 60
+
+	# Temporary buttons just to have a filled up bottom panel
+	row = {
+		button = { text = "Button #1" }
+		button = { text = "Button #2" }
+	}
+}
+
+panel = {
+	x_pos = 0.99
+	y_pos = 0.5
+
+	width = 42%
+	min_width = 420
+	max_width = 640
+
+	align = center
+	border = yes
+
+	visible = no
+
+	heading = { text = "IMPERIUM" tooltip = "Test" }
+
+	# A global binding: the game binds $STATUS every frame.
+	label = "$STATUS"
+
+	section = "PEOPLE OF ROME"
+	list = {
+		id = "people"
+		width = grow
+		height = 320
+		min_height = 320
+		scrollable = yes
+		background = dark
+		border = yes
+		template = {
+			panel = {
+				width = grow
+				height = fit
+				label = "$NAME, age $AGE $ACTIVITY"
+				row = {
+					button = { action = "femalify $ID" text = "Make Female" visible = "$IS_MALE"}
+					button = { action = "remove $ID" text = "Remove" tooltip = "Remove the entity, whose name is $NAME."}
+				}
+			}
+		}
+	}
+}
+
+# Time controls: the clock's pause/play
+# and the player's rest/stop (a sim command). Time flows when both agree.
+panel = {
+	x_pos = 0.99
+	y_pos = 0.02
+	align = center
+	border = yes
+
+	label = "$DATE"
+	row = {
+		button = { action = "time_toggle" width = grow text = "$TIME_BUTTON" enabled = "$TIME_ENABLED" }
+		button = { action = "$PLAYER_ACTION" width = grow text = "$PLAYER_BUTTON" visible = "$HAS_PLAYER" }
+	}
+	# One button per speed level; the game fills the list up to its max
+	# speed, so the row splits itself however many levels there are.
+	list = {
+		id = "speeds"
+		direction = horizontal
+		template = {
+			button = { action = "time_speed $LEVEL" text = "$LEVEL" width = grow enabled = "$ENABLED" }
+		}
+	}
+}

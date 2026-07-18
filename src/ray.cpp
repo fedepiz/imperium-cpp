@@ -69,13 +69,75 @@ fn const char* to_cstr(String text, char* buffer, usize capacity) {
 }
 
 // The centralized font and texture stores. Inside this TU the values are
-// raylib ::Font / ::Texture; outside, only the id keys circulate. Slot
-// budgets are per-system constants.
-constexpr usize                       MAX_FONTS = 64;
-pool::Pool<FontId, ::Font, MAX_FONTS> FONTS;
+// raylib types; outside, only the id keys circulate. Slot budgets are
+// per-system constants.
+//
+// A font entry keeps the font file's bytes and rasterizes one atlas per
+// text size on demand — drawing a 48px atlas scaled to 22px looks thin and
+// washed out, so every size gets its own crisp rasterization (what
+// macroquad did for the Rust build).
+constexpr usize MAX_FONTS      = 16;
+constexpr usize MAX_FONT_SIZES = 8; // distinct rasterized sizes per font
+
+struct FontEntry {
+    u8*    data; // the font file, kept for on-demand rasterization
+    i32    data_size;
+    char   extension[8]; // ".ttf" / ".otf" — LoadFontFromMemory dispatches on it
+    i32    sizes[MAX_FONT_SIZES];
+    ::Font fonts[MAX_FONT_SIZES];
+    u32    count;
+    b32    overflow_logged;
+};
+
+pool::Pool<FontId, FontEntry, MAX_FONTS> FONTS;
 
 constexpr usize                                MAX_TEXTURES = 64;
 pool::Pool<TextureId, ::Texture, MAX_TEXTURES> TEXTURES;
+
+// ASCII plus Latin-1 supplement, so accented glyphs (the layout engine's
+// line probe includes 'Á') rasterize instead of falling back to '?'.
+fn ::Font rasterize(const FontEntry* entry, i32 size) {
+    int codepoints[224];
+    for (int i = 0; i < 224; ++i) codepoints[i] = 32 + i;
+    ::Font font = LoadFontFromMemory(entry->extension, entry->data, entry->data_size, size, codepoints, 224);
+    if (font.texture.id != 0) SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
+    return font;
+}
+
+// The atlas for this font at exactly this size, rasterizing on first use.
+// Nil/stale ids and rasterization failures fall back to the default font.
+// A full size budget is a bug in the caller's size discipline (steady-state
+// UIs use a handful of role sizes): logged once, then the closest cached
+// size stands in — scaled, so visibly degraded, never churning.
+fn ::Font font_for(FontId id, i32 size) {
+    FontEntry* entry = &FONTS[id]; // nil/stale key -> zeroed dummy -> null data
+    if (!entry->data) return GetFontDefault();
+    for (u32 i = 0; i < entry->count; ++i) {
+        if (entry->sizes[i] == size) return entry->fonts[i];
+    }
+    if (entry->count == MAX_FONT_SIZES) {
+        if (!entry->overflow_logged) {
+            LOG("ray: font size budget (%d) exhausted; %d px text draws scaled", (int)MAX_FONT_SIZES, (int)size);
+            entry->overflow_logged = true;
+        }
+        u32 closest = 0;
+        i32 best    = 0x7fffffff;
+        for (u32 i = 0; i < entry->count; ++i) {
+            i32 distance = entry->sizes[i] > size ? entry->sizes[i] - size : size - entry->sizes[i];
+            if (distance < best) {
+                best    = distance;
+                closest = i;
+            }
+        }
+        return entry->fonts[closest];
+    }
+    ::Font font = rasterize(entry, size);
+    if (font.texture.id == 0) return GetFontDefault();
+    entry->sizes[entry->count] = size;
+    entry->fonts[entry->count] = font;
+    entry->count += 1;
+    return font;
+}
 
 } // namespace
 
@@ -86,15 +148,34 @@ void window_open(i32 width, i32 height, String title, b32 vsync) {
 }
 
 Font load_font_from_file(String path, i32 size) {
-    char   buffer[256];
-    ::Font loaded = LoadFontEx(to_cstr(path, buffer, sizeof(buffer)), size, 0, 0);
-    // raylib hands back the shared default font on failure; that one is not
-    // ours to store or unload — report the load as failed instead (ZII).
-    if (loaded.texture.id == 0 || loaded.texture.id == GetFontDefault().texture.id) return {};
+    char        buffer[256];
+    const char* cpath     = to_cstr(path, buffer, sizeof(buffer));
+    int         data_size = 0;
+    u8*         data      = LoadFileData(cpath, &data_size);
+    if (!data || data_size <= 0) return {}; // unreadable file (ZII)
 
-    FontId id = pool::insert(&FONTS, loaded);
+    FontEntry entry = {};
+    entry.data      = data;
+    entry.data_size = data_size;
+    const char* extension = strrchr(cpath, '.');
+    if (!extension) extension = ".ttf";
+    for (usize i = 0; i + 1 < sizeof(entry.extension) && extension[i]; ++i) entry.extension[i] = extension[i];
+
+    // Rasterize the requested size now — it validates the file, and it is
+    // the size the caller is about to use anyway.
+    ::Font first = rasterize(&entry, size);
+    if (first.texture.id == 0) {
+        UnloadFileData(data);
+        return {}; // not a font raylib can parse (ZII)
+    }
+    entry.sizes[0] = size;
+    entry.fonts[0] = first;
+    entry.count    = 1;
+
+    FontId id = pool::insert(&FONTS, entry);
     if (pool::is_nil_key(id)) { // store full — degrade to the default font
-        UnloadFont(loaded);
+        UnloadFont(first);
+        UnloadFileData(data);
         return {};
     }
 
@@ -128,8 +209,10 @@ Texture load_texture_from_file(String path, TextureFilter filter) {
 }
 
 void window_close() {
-    for (auto& entry : FONTS)
-        UnloadFont(entry.value);
+    for (auto& entry : FONTS) {
+        for (u32 i = 0; i < entry.value.count; ++i) UnloadFont(entry.value.fonts[i]);
+        UnloadFileData(entry.value.data);
+    }
     memset(&FONTS, 0, sizeof(FONTS)); // ZII reset: every outstanding FontId is now stale
     for (auto& entry : TEXTURES)
         UnloadTexture(entry.value);
@@ -186,8 +269,8 @@ void fill_rect(Rect rect, Color color, f32 corner_radius) {
 }
 
 void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius) {
-    // The stroke sits inside rect — Clay's border convention ("inset into the
-    // bounding box"), so these strokes line up with Clay borders later.
+    // The stroke sits inside rect — borders are inset into the bounding box,
+    // so a border never spills outside its element's bounds.
     // radius <= thickness leaves no room for an inner arc: square corners.
     if (corner_radius <= thickness) {
         DrawRectangleLinesEx(to_raylib(rect), thickness, to_raylib(color)); // draws inset already
@@ -207,12 +290,31 @@ void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius) {
 
 void draw_text(String text, FontId font_id, V2 pos, i32 size, Color color) {
     char   buffer[1024];
-    ::Font font = FONTS[font_id]; // nil/stale key -> zeroed dummy -> default font
-    if (font.texture.id == 0) font = GetFontDefault();
+    ::Font font = font_for(font_id, size); // an atlas rasterized at exactly this size
     // size/10 spacing matches what raylib's own DrawText uses internally.
     DrawTextEx(font, to_cstr(text, buffer, sizeof(buffer)), to_raylib(pos), (f32)size, (f32)size / 10,
                to_raylib(color));
 }
+
+TextMetrics measure_text(String text, FontId font_id, i32 size) {
+    char   buffer[1024];
+    ::Font font = font_for(font_id, size); // the same atlas draw_text uses
+    // Same spacing as draw_text, so measure and draw agree.
+    ::Vector2 measured = MeasureTextEx(font, to_cstr(text, buffer, sizeof(buffer)), (f32)size, (f32)size / 10);
+    // raylib draws from the top-left, so the baseline is cosmetic here; the
+    // glyph boxes span the full line height, making the box bottom the best
+    // stand-in for consumers that want one.
+    TextMetrics result = {};
+    result.size        = {measured.x, measured.y};
+    result.baseline    = measured.y;
+    return result;
+}
+
+void clip_begin(Rect rect) {
+    BeginScissorMode((int)rect.x, (int)rect.y, (int)rect.w, (int)rect.h);
+}
+
+void clip_end() { EndScissorMode(); }
 
 void draw_texture(TextureId texture_id, Rect source, Rect dest, Color color) {
     ::Texture texture = TEXTURES[texture_id]; // nil/stale key -> zeroed dummy
@@ -231,5 +333,10 @@ b32 mouse_pressed(MouseButton button) { return IsMouseButtonPressed(to_raylib(bu
 V2 mouse_pos() {
     ::Vector2 pos = GetMousePosition();
     return {pos.x, pos.y};
+}
+
+V2 mouse_wheel() {
+    ::Vector2 wheel = GetMouseWheelMoveV();
+    return {wheel.x, wheel.y};
 }
 } // namespace ray

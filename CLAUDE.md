@@ -32,10 +32,18 @@ Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
   (implicitly inline already), and boundary-TU implementations of a module's
   API — those must keep a single strong definition other TUs link against.
 - `struct` with all members public; `enum class`; `union`; free functions
-- namespaces — exactly one flat namespace per module, holding that module's
-  functions and types; anonymous namespaces for module-internal helpers
-  (see *Namespaces*)
+- namespaces — one namespace per module; a directory of modules is one
+  module with nested namespaces (`ui::layout`, `ui::ir`); anonymous
+  namespaces for module-internal helpers (see *Namespaces*)
 - templates, in a restrained way (containers, math, small generic utilities — see below)
+- lambdas passed as template callable parameters and invoked during the
+  call — the monomorphized equivalent of a function pointer + context, used
+  for injected callbacks (`measure_text`) and scoped bodies
+  (`ui::layout::add_with`). Never stored in a struct, never type-erased,
+  never escaping the callee. Simple concepts / `requires` clauses may spell
+  the callable's contract (`MeasureText`, `ElementBody`) or a template
+  parameter's data shape (`pool::Key` — a POD wrapping one u64 `value`);
+  nothing beyond that.
 - operator overloading for arithmetic value types only (vectors, matrices)
 - overload sets — the same function name across related types is fine
   (`length(V2)`, `length(V3)`)
@@ -61,7 +69,8 @@ Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
 - `using namespace`, at any scope — see *Namespaces*
 - `new`/`delete`, `malloc`/`free` outside the memory layer, smart pointers
 - `private`/`protected`, `friend`, `class` keyword (use `struct`)
-- lambdas, `std::function`, functors
+- `std::function`, functors, and lambdas outside the sanctioned callable-
+  parameter shape above (no storing closures, no type erasure)
 - references as everyday parameters, returns, or fields — pass pointers, so
   mutation is visible at the call site. References are allowed where they are
   genuinely necessary (`operator[]` returning `T&` in a container, operator
@@ -75,7 +84,9 @@ Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
 - `<stdarg.h>` — varargs for formatting functions
 - `<compare>` — only for defaulted comparison operators (`operator<=>`) on
   value types
-- `<stdio.h>`, `<stdlib.h>` — platform/debug layer only (startup allocation, logging)
+- `<stdio.h>`, `<stdlib.h>` — platform/debug layer only (startup allocation,
+  logging), plus one sanctioned exception: `vsnprintf` as the backend of
+  `string::format`
 - OS headers (`sys/mman.h`, `windows.h`, ...) — inside the platform-guarded
   implementation blocks of platform modules only, never at module top level
 - `<atomic>` — only if/when threading requires it
@@ -88,8 +99,13 @@ Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
 Namespaces are the organization and collision-avoidance tool — there are no
 name prefixes.
 
-- One namespace per module, named after the module, `snake_case`, flat — never
-  nested (the anonymous namespace for internals is the one exception).
+- One namespace per module, named after the module, `snake_case`. A module
+  is usually one file and one flat namespace; a directory under `src/` is
+  one module split across files, and its files nest inside the directory's
+  namespace — `src/ui/layout.hpp` is `ui::layout`, `src/ui/ir.hpp` is
+  `ui::ir`. Nesting mirrors the file tree, never invents extra levels.
+  A type shared by the whole directory may sit at the directory namespace
+  itself.
 - A module's functions **and** its types live in its namespace: `arena::Arena`,
   `arena::push`, `world::Entity`, `world::spawn`, `renderer::flush`.
 - Exception: everything defined in `core.hpp` is global — the primitive
@@ -102,11 +118,11 @@ name prefixes.
   that's ADL — treat it as a bug, not a convenience. Operator overloads are the
   one sanctioned ADL lookup. One exception: a module may write
   `using namespace math;` inside its own namespace block — math value types
-  are pervasive enough to earn it (decided for `ray.hpp`). Note the leak: the
-  imported names become reachable through the module's namespace
-  (`ray::V2` spells). No other namespace gets this.
+  are pervasive enough to earn it (decided for `ray.hpp`, extended to the
+  `ui` modules). Note the leak: the imported names become reachable through
+  the module's namespace (`ray::V2` spells). No other namespace gets this.
 - Decided: math value types live in `math.hpp` as `math::V2`, `math::Rect`,
-  ... — not in `core.hpp`.
+  `math::Color` (plus the color constants), ... — not in `core.hpp`.
 
 ## Primitive types
 
@@ -292,9 +308,13 @@ In order of preference:
 2. Arena-allocated array when the count is only known at runtime but fixed
    after creation: `arena::allocate<Entity>(a, count)`.
 3. `Slice<T>` — the universal view type for passing ranges around.
-4. Hand-rolled, arena-backed structures (growable array, hash table, free-list
-   pool) written once in a core-adjacent module and reused — only when 1–3
-   truly don't fit.
+4. Hand-rolled, arena-backed structures written once in a core-adjacent
+   module and reused — only when 1–3 truly don't fit. Existing: `vec::Vec`
+   (growable array), `list::List` (chunked, address-stable), `pool::Pool`
+   (generational handles behind opaque u64 keys — the slot/generation
+   packing is private to the module), `hashtable::Table` (open-addressing hash map,
+   u64 keys, key 0 reserved; value pointers are invalidated by growth — an
+   address-stable binned variant would be a separate module beside it).
 
 No `std::vector`, `std::map`, `std::unordered_map`, `std::array`, etc., ever.
 
@@ -321,7 +341,8 @@ metaprogramming.
 
 - OK: `Slice<T>`, `arena::allocate<T>`, `min`/`max`/`clamp`/`swap`, a generic
   arena-backed array. Simple, shallow, obvious at the call site.
-- Not OK: SFINAE, `<type_traits>` gymnastics, CRTP, concepts, variadic template
+- Not OK: SFINAE, `<type_traits>` gymnastics, CRTP, concepts beyond the simple
+  contract-spelling kind sanctioned in *Language subset*, variadic template
   recursion, expression templates, template code whose instantiation you can't
   picture immediately.
 - Operator overloading is for arithmetic value types only — `V2`, `V3`, `V4`,
@@ -352,10 +373,14 @@ metaprogramming.
 
 ## Project layout and unity build
 
-All code lives flat in `src/`. A **module** is one self-sufficient `.hpp`
+Code lives in `src/`, flat except for multi-file modules, which get one
+directory (`src/ui/`) whose files nest inside the directory's namespace
+(see *Namespaces*). A **module** is one self-sufficient `.hpp`
 file: `#pragma once` at the top, then `#include`s of the modules it depends
 on, then the module's namespace with its types, declarations, and
-implementations. A **root** is a `.cpp` file, one per binary. The extension
+implementations. A **root** is a `.cpp` file, one per binary — always
+directly in `src/` (the build scripts glob `src/*.cpp` non-recursively;
+module subdirectories hold `.hpp` only). The extension
 encodes the rule: `.hpp` is included, `.cpp` is compiled. (Modules are named
 `.hpp` rather than `.cpp` because clang's include completion only offers
 header-like extensions — with `.cpp` modules the LSP can't complete
@@ -367,6 +392,11 @@ src/
   vmem.hpp     // vmem:: — virtual memory reserve/commit; platform blocks inside
   arena.hpp    // arena:: — includes core.hpp, vmem.hpp
   <system>.hpp // one module per system: world.hpp, renderer.hpp, assets.hpp, ...
+  ui/          // ui:: — the UI module, one directory, nested namespaces:
+               //   ui.hpp (ui:: — the facade: ui::Ui, load, run, Result),
+               //   layout.hpp (ui::layout — the engine), style.hpp (ui::style),
+               //   ir.hpp (ui::ir), data.hpp (ui::data), walk.hpp (ui::walk);
+               //   games talk to ui.hpp + ui::data, the rest is machinery
   ray.hpp      // ray:: — raylib boundary, declaration-only (see *Boundary TUs*)
   ray.cpp      // BOUNDARY TU: the only file that includes raylib.h — not a root
   main.cpp     // ROOT: the game binary
@@ -398,7 +428,7 @@ a library gets a boundary pair, the one sanctioned break in the unity build:
 - `ray.hpp` — an ordinary declaration-only module: the `ray::` API in project
   types, no raylib include, no implementations.
 - `ray.cpp` — the only TU that includes `raylib.h`; implements `ray.hpp`,
-  converting types and strings at the boundary. Not a root: `build.sh`
+  converting types and strings at the boundary. Not a root: `x.sh`
   compiles it once to `build/ray.o` and links it into every binary.
 - Enums that mirror library constants (`ray::Key`) are `static_assert`ed
   against them inside the boundary TU.
@@ -449,19 +479,21 @@ u8* reserve(usize size) { /* mmap */ }
 
 ### Build
 
-`build.sh` is the whole build system — one `clang++` invocation per root, no
+`x.sh` is the whole build system — one `clang++` invocation per root, no
 Makefile, no CMake. A unity build has one compilation node per binary; there
-is nothing to track incrementally. `build.bat` is its Windows twin — same
+is nothing to track incrementally. `x.bat` is its Windows twin — same
 commands, same profiles, same clang — and the two must stay behaviourally in
 sync: a change to one is a change to both. Windows-only deviations live in
-`build.bat` with a comment (MSVC CRT defines, `.lib` link forwarding, raylib
+`x.bat` with a comment (MSVC CRT defines, `.lib` link forwarding, raylib
 compiled directly with clang instead of via its Makefile since there is no
 `make`). `third_party.a` is platform-specific and never committed — each
 machine builds its own via the `third_party` command.
 
 - Commands: `clean`, `build`, `run` (rebuilds only when stale), `third_party`.
 - Flags: `-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror`
-  (unused variables warn without failing the build). The default profile is
+  (unused variables warn without failing the build; `-Wno-reorder-init-list`
+  because out-of-order designated init is house style — call sites order
+  fields by meaning, not declaration). The default profile is
   `-O1` with `ASSERT`/`LOG` enabled; `--release` is `-O2` with both compiled
   out; `--debug` adds `-g` to either.
 - The script also emits `compile_commands.json` with one entry per file in
@@ -502,8 +534,8 @@ running the game, not by unit tests.
   crash is a bug to fix now, not a result to tally.
 - **Each test owns its arenas** — reserve/release locally, sized per test.
   There is no shared runner arena.
-- `./build.sh build` compiles every root, so test code can never silently
-  rot; `./build.sh test` rebuilds when stale, then runs the suite.
+- `./x.sh build` compiles every root, so test code can never silently
+  rot; `./x.sh test` rebuilds when stale, then runs the suite.
 - Later, when file I/O exists: a corpus test parses every real data file
   under `assets/` and demands zero errors.
 

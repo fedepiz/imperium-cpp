@@ -1,8 +1,8 @@
 #!/bin/zsh
-# build.sh — the whole build system: one clang++ invocation per root binary.
+# x.sh — the whole build system: one clang++ invocation per root binary.
 # Modules (.hpp) are included by roots (.cpp); only roots are compiled.
 #
-# Usage: ./build.sh [command] [--release] [--debug]
+# Usage: ./x.sh [command] [--release] [--debug]
 #   clean        remove build artifacts
 #   build        build all roots (default command; runs third_party first when necessary)
 #   run          build if out of date, then run the game
@@ -26,9 +26,11 @@ for arg in "$@"; do
     esac
 done
 
+# -Wno-reorder-init-list: out-of-order designated init is our style (ZII PODs;
+# field order at the call site follows meaning, not declaration).
 BASE_FLAGS=(-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror
-            -Wno-error=unused-variable
-            -Ithird_party/raylib/src -Ithird_party/clay)
+            -Wno-error=unused-variable -Wno-reorder-init-list
+            -Ithird_party/raylib/src)
 if (( RELEASE )); then
     FLAGS=($BASE_FLAGS -O2)
     PROFILE=release
@@ -57,8 +59,8 @@ third_party_if_needed() {
     local a=third_party/third_party.a
     # Vendored library sources are effectively frozen — staleness only tracks
     # our own third_party files. After editing vendored code, run
-    # `./build.sh third_party` by hand.
-    [[ -f $a && ! third_party/build.sh -nt $a && ! third_party/clay_impl.c -nt $a ]] && return 0
+    # `./x.sh third_party` by hand.
+    [[ -f $a && ! third_party/build.sh -nt $a ]] && return 0
     cmd_third_party
 }
 
@@ -73,7 +75,8 @@ gen_compile_commands() {
     {
         echo "["
         local first=1
-        for f in src/*.cpp src/*.hpp; do
+        # **/* recursion so modules in subdirs (src/ui/...) get entries too
+        for f in src/**/*.cpp(N) src/**/*.hpp(N); do
             [[ $first == 1 ]] || echo ","
             first=0
             # -x c++ makes clangd treat module .hpp files as self-contained TUs
@@ -94,7 +97,7 @@ build_needed() {
     done
     [[ "$(cat $STAMP 2>/dev/null)" == "$FLAGS" ]] || return 0
     [[ -n $(find src \( -name '*.cpp' -o -name '*.hpp' \) -newer $BIN) ]] && return 0
-    [[ build.sh -nt $BIN ]] && return 0
+    [[ x.sh -nt $BIN ]] && return 0
     [[ -f third_party/third_party.a && third_party/third_party.a -nt $BIN ]] && return 0
     return 1
 }

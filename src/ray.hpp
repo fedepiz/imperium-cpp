@@ -6,23 +6,14 @@
 // build. raylib's header declares unprefixed C names (Color, Rectangle,
 // DrawText, the color macros, ...), so it never enters our TUs: this module
 // is declaration-only, and ray.cpp — the single TU that includes raylib.h —
-// implements it, converting types at the boundary. build.sh compiles ray.cpp
+// implements it, converting types at the boundary. x.sh compiles ray.cpp
 // once to build/ray.o and links it into every binary.
 
 namespace ray {
-using namespace math;
-
-// ZII: zero is transparent black.
-struct Color {
-    u8 r, g, b, a;
-};
-
-inline constexpr Color BLACK     = {0, 0, 0, 255};
-inline constexpr Color WHITE     = {255, 255, 255, 255};
-inline constexpr Color RED       = {230, 41, 55, 255};
-inline constexpr Color GREEN     = {0, 228, 48, 255};
-inline constexpr Color BLUE      = {0, 121, 241, 255};
-inline constexpr Color DARK_GRAY = {80, 80, 80, 255};
+using namespace math; // Color and the color constants live in math.hpp; ray::Color still spells.
+// The using-declaration (unlike the directive) makes Color a member of ray,
+// so inside ray.cpp it shadows raylib's global ::Color instead of clashing.
+using math::Color;
 
 // Values match raylib's KeyboardKey (GLFW key codes) so the boundary is a
 // cast; ray.cpp static_asserts the run endpoints. Zero = no key (KEY_NULL).
@@ -112,28 +103,31 @@ enum class MouseButton : u32 {
     Middle,
 };
 
-// Key into the module's font store — pool-key conformant ({slot, generation},
-// zero = nil). Drawing with a nil or stale key falls back to raylib's
-// built-in default font, so a FontId is always safe to use.
+// Opaque key into the module's font store; zero = nil. Drawing with a nil
+// or stale key falls back to raylib's built-in default font, so a FontId is
+// always safe to use.
 struct FontId {
-    u32 slot;
-    u32 generation;
+    u64 value;
 };
 
-// What loading returns: the store key plus the pixel size the font was
-// rasterized at. ZII: the zero Font means "no font" and draws as the default.
+// What loading returns: the store key plus the pixel size rasterized at
+// load. ZII: the zero Font means "no font" and draws as the default.
 struct Font {
     FontId id;
     i32    size;
 };
 
-// Rasterizes the file at the given pixel size into the font store. Zero Font
-// when the file can't be read or the store is full.
+// Loads the font file into the store and rasterizes it at the given pixel
+// size. The store keeps the file's bytes: drawing or measuring at any other
+// size rasterizes that size on first use, so text is always drawn from an
+// atlas of exactly its own size, never scaled. Zero Font when the file
+// can't be read or parsed, or the store is full.
 Font load_font_from_file(String path, i32 size);
 
+// Opaque key into the module's texture store; zero = nil. Drawing with a
+// nil or stale key draws nothing.
 struct TextureId {
-    u32 slot;
-    u32 generation;
+    u64 value;
 };
 
 struct Texture {
@@ -191,6 +185,22 @@ void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius);
 
 void draw_text(String text, FontId font, V2 pos, i32 size, Color color); // truncated past 1023 bytes
 
+// Ink extents of text as draw_text would render it (same font fallback, same
+// spacing). baseline is the distance from the top of the draw box to the
+// baseline — raylib draws from the top-left, so drawing needs no baseline;
+// it exists for layout consumers that align text by baseline.
+struct TextMetrics {
+    V2  size;
+    f32 baseline;
+};
+TextMetrics measure_text(String text, FontId font, i32 size); // truncated past 1023 bytes
+
+// Scissor clipping: draw calls between clip_begin and clip_end only touch
+// pixels inside rect. Does not nest at this level — each clip_begin replaces
+// the active scissor; callers wanting a stack intersect rects themselves.
+void clip_begin(Rect rect);
+void clip_end();
+
 void draw_texture(TextureId texture, Rect source, Rect dest, Color color);
 
 // Input.
@@ -200,4 +210,5 @@ b32 key_released(Key key); // went up this frame
 b32 mouse_down(MouseButton button);
 b32 mouse_pressed(MouseButton button);
 V2 mouse_pos();
+V2 mouse_wheel(); // this frame's wheel movement; x is horizontal (trackpads/tilt wheels)
 } // namespace ray

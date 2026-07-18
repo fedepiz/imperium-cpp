@@ -22,11 +22,6 @@ for %%f in (rcore rshapes rtextures rtext rmodels raudio rglfw) do (
     set "OBJS=!OBJS! build\%%f.o"
 )
 
-rem clay — header-only; instantiate the implementation once
-clang -std=c99 -O2 -c clay_impl.c -o build\clay_impl.o
-if errorlevel 1 goto :fail
-set "OBJS=!OBJS! build\clay_impl.o"
-
 rem merge everything into the one archive
 if exist third_party.a del third_party.a
 llvm-ar rcs third_party.a !OBJS!
