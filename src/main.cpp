@@ -9,7 +9,7 @@
 
 // String is not null-terminated — print by explicit length. Lives here because
 // iostream is root-only; modules never see it.
-std::ostream& operator<<(std::ostream& out, String string) {
+fn std::ostream& operator<<(std::ostream& out, String string) {
     return out.write(string.data, (std::streamsize)string.len);
 }
 
@@ -23,7 +23,7 @@ struct Config {
     b32 vsync;
 };
 
-Config default_config() {
+fn Config default_config() {
     Config result        = {};
     result.screen_width  = 1280;
     result.screen_height = 720;
@@ -31,7 +31,7 @@ Config default_config() {
     return result;
 }
 
-Config load_config(arena::Arena* arena, String path) {
+fn Config load_config(arena::Arena* arena, String path) {
     Config result = default_config();
 
     file_io::ReadFile<String> source = file_io::read_file_to_string(arena, path);
@@ -64,17 +64,18 @@ Config load_config(arena::Arena* arena, String path) {
     return result;
 }
 
-// Smooth-scrolling camera: velocity eases toward the keyed direction and
-// integrates into position. ZII: the zero camera sits at the origin, at rest.
-struct Camera {
-    math::V2 position;
-    math::V2 velocity;
+// Smooth-scrolling camera: the ray::Camera is the view transform, the wrapper
+// adds the velocity that eases it around. ZII: the zero camera is the
+// identity view, at rest.
+struct MovingCamera {
+    ray::Camera inner;
+    math::V2    velocity;
 };
 
-constexpr f32 CAMERA_SPEED       = 300;  // px/s at full tilt
-constexpr f32 CAMERA_SMOOTH_TIME = 0.1f; // seconds to close ~63% of the velocity gap
+fn void camera_update(MovingCamera* camera, f32 dt) {
+    constexpr f32 CAMERA_SPEED       = 300;  // px/s at full tilt
+    constexpr f32 CAMERA_SMOOTH_TIME = 0.1f; // seconds to close ~63% of the velocity gap
 
-void camera_update(Camera* camera, f32 dt) {
     f32 dir_x = 0;
     f32 dir_y = 0;
     if (ray::key_down(ray::Key::Left) || ray::key_down(ray::Key::A)) dir_x -= 1;
@@ -92,9 +93,40 @@ void camera_update(Camera* camera, f32 dt) {
     f32 blend = 1 - expf(-dt / CAMERA_SMOOTH_TIME);
     camera->velocity.x += (dir_x * CAMERA_SPEED - camera->velocity.x) * blend;
     camera->velocity.y += (dir_y * CAMERA_SPEED - camera->velocity.y) * blend;
-    camera->position.x += camera->velocity.x * dt;
-    camera->position.y += camera->velocity.y * dt;
+    camera->inner.target.x += camera->velocity.x * dt;
+    camera->inner.target.y += camera->velocity.y * dt;
 }
+
+struct Ui {
+    String    name;
+    ray::Font font;
+};
+
+struct Board {
+    MovingCamera camera;
+    math::V2     square_pos; // world-space center of the toggle square
+    b32          toggle;
+};
+
+fn void draw_board_layer(Board* board, MovingCamera camera) {
+
+    // World space: the square stays put while the camera pans over it, and
+    // the mouse converts through the same camera the drawing uses.
+    ray::camera_begin(camera.inner);
+    {
+        auto bounds = math::rect_with_center_and_size(board->square_pos, math::splat(64));
+        auto fill   = board->toggle ? ray::BLUE : ray::RED;
+        ray::fill_rect(bounds, fill, 8);
+        ray::stroke_rect(bounds, 4, ray::GREEN, 8);
+        auto mouse_world = ray::screen_to_world(camera.inner, ray::mouse_pos());
+        if (math::contains(bounds, mouse_world) && ray::mouse_pressed(ray::MouseButton::Left)) {
+            board->toggle ^= true;
+        }
+    }
+    ray::camera_end();
+}
+
+fn void draw_ui_layer(Ui* ui) { ray::draw_text(ui->name, ui->font.id, {32, 32}, ui->font.size, ray::WHITE); }
 
 int main() {
     arena::Arena arena;
@@ -108,7 +140,6 @@ int main() {
     for (auto error : parsed.errors) {
         std::cout << error.message << std::endl;
     }
-    String id = parsed.roots.len ? tabula::get_text(&parsed.roots[0], "id") : String{};
 
     Config config = load_config(&arena, "data/config.txt");
     ray::window_open(config.screen_width, config.screen_height, "imperium", config.vsync);
@@ -117,15 +148,20 @@ int main() {
     // Zero Font on failure is fine: draw_text falls back to the default font.
     ray::Font font = ray::load_font_from_file("assets/fonts/default.ttf", 48);
 
-    Camera camera   = {};
-    camera.position = {100, 100};
+    Board board      = {};
+    board.square_pos = {100, 100};
+
+    Ui ui   = {};
+    ui.name = parsed.roots.len ? tabula::get_text(&parsed.roots[0], "id") : String{};
+    ui.font = font;
+
     while (!ray::window_should_close()) {
-        camera_update(&camera, ray::frame_time());
+        camera_update(&board.camera, ray::frame_time());
 
         ray::frame_begin();
         ray::clear({40, 40, 46, 255});
-        ray::draw_text(id, font.id, 32, 32, font.size, ray::WHITE);
-        ray::draw_rect(camera.position.x, camera.position.y, 64, 64, ray::RED);
+        draw_board_layer(&board, board.camera);
+        draw_ui_layer(&ui);
         ray::frame_end();
     }
     ray::window_close();

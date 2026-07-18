@@ -22,6 +22,14 @@ using f64 = double;
 
 using usize = std::size_t;
 
+// fn — the project function keyword: every free-function definition is
+// written `fn <return> name(...)`. Expands to inline, so a module can land in
+// more than one TU of a binary (the boundary TU) without duplicate-symbol
+// errors. Not used on: main (may not be inline), declarations (module
+// contracts stay plain), and boundary-TU implementations of a module's API —
+// those must keep a single strong definition other TUs can link against.
+#define fn inline
+
 // ASSERT — programmer errors and invariants: traps into the debugger.
 // LOG(fmt, ...) — printf-style logging to stderr; fmt must be a string literal.
 // Both compile to nothing unless ASSERT_ENABLE / LOG_ENABLE is defined (by the

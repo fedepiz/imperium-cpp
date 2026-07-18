@@ -63,14 +63,14 @@ constexpr usize FIRST_CHUNK_CAP = 64;
 
 } // namespace
 
-template <typename T> List<T> make_list(arena::Arena* arena) {
+template <typename T> fn List<T> make_list(arena::Arena* arena) {
     List<T> result = {};
     result.arena   = arena;
     return result;
 }
 
 // Returns the slot the value was stored in — stable for the arena's lifetime.
-template <typename T> T* push(List<T>* list, T value) {
+template <typename T> fn T* push(List<T>* list, T value) {
     Chunk<T>* last = list->last;
     if (!last || last->len == last->cap) {
         usize     cap   = last ? last->cap * 2 : FIRST_CHUNK_CAP;
@@ -93,16 +93,16 @@ template <typename T> T* push(List<T>* list, T value) {
 }
 
 // Oldest element, or null when empty.
-template <typename T> T* front(List<T>* list) {
+template <typename T> fn T* front(List<T>* list) {
     return list->first ? &list->first->values[list->head] : 0;
 }
 
 // Newest element, or null when empty.
-template <typename T> T* back(List<T>* list) {
+template <typename T> fn T* back(List<T>* list) {
     return list->last ? &list->last->values[list->last->len - 1] : 0;
 }
 
-template <typename T> void pop_front(List<T>* list) {
+template <typename T> fn void pop_front(List<T>* list) {
     ASSERT(list->len > 0);
     list->head += 1;
     list->len -= 1;
@@ -113,7 +113,7 @@ template <typename T> void pop_front(List<T>* list) {
     }
 }
 
-template <typename T> void pop_back(List<T>* list) {
+template <typename T> fn void pop_back(List<T>* list) {
     ASSERT(list->len > 0);
     Chunk<T>* last = list->last;
     last->len -= 1;
@@ -135,7 +135,7 @@ template <typename T> void pop_back(List<T>* list) {
 }
 
 // Drops all elements; chunks are abandoned to the arena, the wiring stays.
-template <typename T> void clear(List<T>* list) {
+template <typename T> fn void clear(List<T>* list) {
     list->first = 0;
     list->last  = 0;
     list->head  = 0;

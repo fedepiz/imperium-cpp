@@ -120,14 +120,14 @@ struct Parser {
 
 // Bytes that end a bare scalar. All ASCII, so slicing at them always lands
 // on a UTF-8 boundary.
-bool is_terminator(char b) {
+fn bool is_terminator(char b) {
     return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '{' || b == '}' || b == '=' || b == '<' ||
            b == '>' || b == '!' || b == '#' || b == '"';
 }
 
-bool is_space(char b) { return b == ' ' || b == '\t' || b == '\r' || b == '\n'; }
+fn bool is_space(char b) { return b == ' ' || b == '\t' || b == '\r' || b == '\n'; }
 
-void skip_trivia(Parser* p) {
+fn void skip_trivia(Parser* p) {
     while (p->pos < p->text.len) {
         char b = p->text.data[p->pos];
         if (is_space(b)) {
@@ -144,7 +144,7 @@ void skip_trivia(Parser* p) {
     }
 }
 
-String error_description(ErrorKind kind) {
+fn String error_description(ErrorKind kind) {
     switch (kind) {
     case ErrorKind::Nil: return "";
     case ErrorKind::UnexpectedChar: return "unexpected character";
@@ -157,7 +157,7 @@ String error_description(ErrorKind kind) {
     return "";
 }
 
-void push_u32(vec::Vec<char>* text, u32 value) {
+fn void push_u32(vec::Vec<char>* text, u32 value) {
     char  digits[10]; // u32 fits in 10 decimal digits
     usize count = 0;
     do {
@@ -171,7 +171,7 @@ void push_u32(vec::Vec<char>* text, u32 value) {
     }
 }
 
-ParseError make_error(Parser* p, ErrorKind kind) {
+fn ParseError make_error(Parser* p, ErrorKind kind) {
     u32 line = 1;
     u32 col  = 1;
     for (usize i = 0; i < p->pos; ++i) {
@@ -193,12 +193,12 @@ ParseError make_error(Parser* p, ErrorKind kind) {
     return {.kind = kind, .offset = p->pos, .line = line, .col = col, .message = vec::slice(&message)};
 }
 
-void record(Parser* p, ErrorKind kind) { vec::push(&p->errors, make_error(p, kind)); }
+fn void record(Parser* p, ErrorKind kind) { vec::push(&p->errors, make_error(p, kind)); }
 
 // Skip past the offending input so parsing can continue: advance to the next
 // whitespace or '}' (never consuming a '}', which may close an enclosing
 // block).
-void recover(Parser* p) {
+fn void recover(Parser* p) {
     while (p->pos < p->text.len) {
         char b = p->text.data[p->pos];
         if (b == '}' || is_space(b)) return;
@@ -218,7 +218,7 @@ struct OpResult {
     ParseError error;
 };
 
-Value value_from_text(String text) {
+fn Value value_from_text(String text) {
     string::ParseF32Result number = string::parse_f32(text);
     return {.is_number = number.ok, .text = text, .number = number.value};
 }
@@ -228,7 +228,7 @@ TermResult parse_item(Parser* p, u32 depth);
 // Items until EOF or an unconsumed '}' (at depth 0 a stray '}' is recorded
 // and skipped instead). Infallible: item errors are recorded and recovered
 // from.
-Slice<Node> parse_items(Parser* p, u32 depth) {
+fn Slice<Node> parse_items(Parser* p, u32 depth) {
     vec::Vec<Node> items = vec::make_vec<Node>(p->arena, 0);
     while (true) {
         skip_trivia(p);
@@ -251,7 +251,7 @@ Slice<Node> parse_items(Parser* p, u32 depth) {
 }
 
 // A keyless term: atom or block. key/op stay zero.
-TermResult parse_term(Parser* p, u32 depth) {
+fn TermResult parse_term(Parser* p, u32 depth) {
     if (p->pos >= p->text.len) return {.error = make_error(p, ErrorKind::ExpectedValue)};
     char b = p->text.data[p->pos];
     if (b == '}') return {.error = make_error(p, ErrorKind::ExpectedValue)};
@@ -311,7 +311,7 @@ TermResult parse_term(Parser* p, u32 depth) {
     return result;
 }
 
-OpResult try_op(Parser* p) {
+fn OpResult try_op(Parser* p) {
     if (p->pos >= p->text.len) return {};
     char b           = p->text.data[p->pos];
     bool trailing_eq = p->pos + 1 < p->text.len && p->text.data[p->pos + 1] == '=';
@@ -340,7 +340,7 @@ OpResult try_op(Parser* p) {
 }
 
 // term (op term)? — a keyed pair or a bare value.
-TermResult parse_item(Parser* p, u32 depth) {
+fn TermResult parse_item(Parser* p, u32 depth) {
     TermResult first = parse_term(p, depth);
     if (first.error.kind != ErrorKind::Nil) return first;
     if (first.node.kind == Kind::Block) return first;
@@ -362,7 +362,7 @@ TermResult parse_item(Parser* p, u32 depth) {
 
 // Parse a whole source file. Never fails; see ParseResult. Everything in the
 // result lives in arena.
-ParseResult parse(arena::Arena* arena, String src) {
+fn ParseResult parse(arena::Arena* arena, String src) {
     Parser p = {};
     p.text   = src;
     p.arena  = arena;
@@ -378,7 +378,7 @@ ParseResult parse(arena::Arena* arena, String src) {
 // none, so chained lookups are always safe: get(get(root, camp), site).
 // Duplicate keys are legal and common — to visit every match, loop children
 // with string::equals yourself.
-const Node* get(const Node* node, String key) {
+fn const Node* get(const Node* node, String key) {
     for (usize i = 0; i < node->children.len; ++i) {
         const Node* child = &node->children.data[i];
         if (string::equals(child->key, key)) return child;
@@ -387,24 +387,24 @@ const Node* get(const Node* node, String key) {
 }
 
 // value of the first child with this key; zero Value when missing or a block.
-Value get_value(const Node* node, String key) {
+fn Value get_value(const Node* node, String key) {
     const Node* child = get(node, key);
     if (child->kind != Kind::Atom) return {};
     return child->value;
 }
 
 // Text of the first child with this key; empty when missing or a block.
-String get_text(const Node* node, String key) { return get_value(node, key).text; }
+fn String get_text(const Node* node, String key) { return get_value(node, key).text; }
 
 // Number of the first child with this key; 0 when missing or not numeric
 // (use get_value().is_number when a real 0 must be told apart).
-f32 get_number(const Node* node, String key) { return get_value(node, key).number; }
+fn f32 get_number(const Node* node, String key) { return get_value(node, key).number; }
 
 // Typed reads with an explicit fallback for when the key is missing or the
 // value doesn't fit — for callers whose defaults aren't zero (configs).
 
 // Clausewitz-style booleans: yes/no, or any number (nonzero = true).
-b32 read_b32(const Node* node, String key, b32 fallback) {
+fn b32 read_b32(const Node* node, String key, b32 fallback) {
     Value value = get_value(node, key);
     if (value.is_number) return value.number != 0;
     if (string::equals(value.text, "yes")) return true;
@@ -412,7 +412,7 @@ b32 read_b32(const Node* node, String key, b32 fallback) {
     return fallback;
 }
 
-i32 read_i32(const Node* node, String key, i32 fallback) {
+fn i32 read_i32(const Node* node, String key, i32 fallback) {
     Value value = get_value(node, key);
     if (!value.is_number) return fallback;
     return (i32)value.number;

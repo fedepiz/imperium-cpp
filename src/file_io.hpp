@@ -38,7 +38,7 @@ template <typename T> struct ReadFile {
 
 namespace {
 
-Error make_error(arena::Arena* arena, ErrorKind kind, String path, const char* cause) {
+fn Error make_error(arena::Arena* arena, ErrorKind kind, String path, const char* cause) {
     usize cause_len = strlen(cause);
     char* text      = (char*)arena::allocate_raw(arena, path.len + 2 + cause_len, 1);
     if (path.len) memcpy(text, path.data, path.len);
@@ -53,7 +53,7 @@ Error make_error(arena::Arena* arena, ErrorKind kind, String path, const char* c
 
 } // namespace
 
-ReadFile<Slice<u8>> read_file_to_bytes(arena::Arena* arena, String path) {
+fn ReadFile<Slice<u8>> read_file_to_bytes(arena::Arena* arena, String path) {
     ReadFile<Slice<u8>> result = {};
     result.messages            = list::make_list<Error>(arena);
 
@@ -89,7 +89,7 @@ ReadFile<Slice<u8>> read_file_to_bytes(arena::Arena* arena, String path) {
     return result;
 }
 
-ReadFile<String> read_file_to_string(arena::Arena* arena, String path) {
+fn ReadFile<String> read_file_to_string(arena::Arena* arena, String path) {
     ReadFile<Slice<u8>> bytes = read_file_to_bytes(arena, path);
 
     ReadFile<String> result = {};

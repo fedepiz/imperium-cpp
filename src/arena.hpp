@@ -43,11 +43,11 @@ namespace {
 // commit ranges stay page-aligned without querying the OS.
 constexpr usize COMMIT_CHUNK = 64 * 1024;
 
-usize align_up(usize value, usize align) { return (value + align - 1) & ~(align - 1); }
+fn usize align_up(usize value, usize align) { return (value + align - 1) & ~(align - 1); }
 
 } // namespace
 
-void reserve(Arena* arena, usize capacity) {
+fn void reserve(Arena* arena, usize capacity) {
     *arena   = {};
     capacity = align_up(capacity, COMMIT_CHUNK);
     u8* base = vmem::reserve(capacity);
@@ -56,12 +56,12 @@ void reserve(Arena* arena, usize capacity) {
     arena->size = capacity;
 }
 
-void release(Arena* arena) {
+fn void release(Arena* arena) {
     if (arena->base) vmem::release(arena->base, arena->size);
     *arena = {};
 }
 
-u8* allocate_raw(Arena* arena, usize length, usize align) {
+fn u8* allocate_raw(Arena* arena, usize length, usize align) {
     ASSERT(align != 0 && (align & (align - 1)) == 0);
     if (length == 0) return 0;
     usize offset = align_up(arena->used, align);
@@ -81,19 +81,19 @@ u8* allocate_raw(Arena* arena, usize length, usize align) {
     return result;
 }
 
-void reset(Arena* arena) {
+fn void reset(Arena* arena) {
     arena->used = 0; // pages stay committed for reuse
 }
 
-template <typename T> T* allocate(Arena* arena, usize count = 1) {
+template <typename T> fn T* allocate(Arena* arena, usize count = 1) {
     return (T*)allocate_raw(arena, sizeof(T) * count, alignof(T));
 }
 
-template <typename T> Slice<T> make_slice(Arena* arena, usize count) {
+template <typename T> fn Slice<T> make_slice(Arena* arena, usize count) {
     return {count, allocate<T>(arena, count)};
 }
 
-template <typename T> Slice<T> clone_slice(Arena* arena, Slice<T> slice) {
+template <typename T> fn Slice<T> clone_slice(Arena* arena, Slice<T> slice) {
     auto out = make_slice<T>(arena, slice.len);
     for (usize i = 0; i < slice.len; ++i) {
         out.data[i] = slice.data[i];
@@ -101,9 +101,9 @@ template <typename T> Slice<T> clone_slice(Arena* arena, Slice<T> slice) {
     return out;
 }
 
-String make_string(Arena* arena, usize count) { return make_slice<char>(arena, count); }
+fn String make_string(Arena* arena, usize count) { return make_slice<char>(arena, count); }
 
-String clone_string(Arena* arena, const char* str) {
+fn String clone_string(Arena* arena, const char* str) {
     auto* ch = str;
     while (true) {
         if (*ch == '\0') break;

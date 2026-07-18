@@ -12,7 +12,7 @@ namespace string {
 
 // Null-terminated copy for OS/library boundaries — C strings never travel
 // further inward than the call site that needs them.
-const char* to_cstr(arena::Arena* arena, String s) {
+fn const char* to_cstr(arena::Arena* arena, String s) {
     char* cstr = (char*)arena::allocate_raw(arena, s.len + 1, 1); // zeroed: terminator included
     if (s.len) memcpy(cstr, s.data, s.len);
     return cstr;
@@ -20,11 +20,11 @@ const char* to_cstr(arena::Arena* arena, String s) {
 
 namespace {
 
-bool is_digit(char c) { return c >= '0' && c <= '9'; }
+fn bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
 } // namespace
 
-bool equals(String a, String b) {
+fn bool equals(String a, String b) {
     if (a.len != b.len) return false;
     if (a.len == 0) return true;
     return memcmp(a.data, b.data, a.len) == 0;
@@ -39,7 +39,7 @@ struct ParseF32Result {
 // at least one mantissa digit, and the whole input must be consumed — so
 // "1444.11.11" is not a number. Accumulates in f64, which can differ from a
 // correctly-rounded strtof in the last ULP; game data does not care.
-ParseF32Result parse_f32(String text) {
+fn ParseF32Result parse_f32(String text) {
     usize i    = 0;
     f64   sign = 1.0;
     if (i < text.len && (text.data[i] == '+' || text.data[i] == '-')) {

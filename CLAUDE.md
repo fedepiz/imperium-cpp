@@ -23,6 +23,14 @@ this document wins.
 Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
 
 **Use:**
+- `fn` — the project function keyword (`#define fn inline` in `core.hpp`):
+  every free-function definition is written `fn <return> name(...)`, template
+  functions included (`template <typename T> fn T* allocate(...)`). It makes
+  every module safe to include from more than one TU of a binary (the
+  boundary TU). Not annotated: `main` (may not be inline), declarations
+  (module contracts like `ray.hpp` stay plain), in-class member bodies
+  (implicitly inline already), and boundary-TU implementations of a module's
+  API — those must keep a single strong definition other TUs link against.
 - `struct` with all members public; `enum class`; `union`; free functions
 - namespaces — exactly one flat namespace per module, holding that module's
   functions and types; anonymous namespaces for module-internal helpers
@@ -92,7 +100,11 @@ name prefixes.
 - `using namespace` is banned at every scope. Write the qualifier at every
   cross-module call site. If an unqualified cross-module call compiles anyway,
   that's ADL — treat it as a bug, not a convenience. Operator overloads are the
-  one sanctioned ADL lookup.
+  one sanctioned ADL lookup. One exception: a module may write
+  `using namespace math;` inside its own namespace block — math value types
+  are pervasive enough to earn it (decided for `ray.hpp`). Note the leak: the
+  imported names become reachable through the module's namespace
+  (`ray::V2` spells). No other namespace gets this.
 - Decided: math value types live in `math.hpp` as `math::V2`, `math::Rect`,
   ... — not in `core.hpp`.
 
@@ -390,6 +402,12 @@ a library gets a boundary pair, the one sanctioned break in the unity build:
   compiles it once to `build/ray.o` and links it into every binary.
 - Enums that mirror library constants (`ray::Key`) are `static_assert`ed
   against them inside the boundary TU.
+- A boundary TU is a second TU linked into every binary, so any module it
+  includes (directly or transitively — `core.hpp`, `math.hpp`, `pool.hpp`)
+  now lives in two TUs per binary. The `fn` annotation (see *Language
+  subset*) is what makes that safe — it is why every module function is
+  `fn`, and why the boundary TU's own implementations of its module API are
+  the one place `fn` must NOT appear.
 
 This treatment is earned, not default: a header-only library with prefixed
 names is just included; a boundary pair exists only where a header would
@@ -433,7 +451,13 @@ u8* reserve(usize size) { /* mmap */ }
 
 `build.sh` is the whole build system — one `clang++` invocation per root, no
 Makefile, no CMake. A unity build has one compilation node per binary; there
-is nothing to track incrementally.
+is nothing to track incrementally. `build.bat` is its Windows twin — same
+commands, same profiles, same clang — and the two must stay behaviourally in
+sync: a change to one is a change to both. Windows-only deviations live in
+`build.bat` with a comment (MSVC CRT defines, `.lib` link forwarding, raylib
+compiled directly with clang instead of via its Makefile since there is no
+`make`). `third_party.a` is platform-specific and never committed — each
+machine builds its own via the `third_party` command.
 
 - Commands: `clean`, `build`, `run` (rebuilds only when stale), `third_party`.
 - Flags: `-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror`

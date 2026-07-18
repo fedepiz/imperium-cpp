@@ -1,5 +1,6 @@
 #pragma once
 #include "core.hpp"
+#include "math.hpp"
 
 // Boundary wrapper around raylib — the one sanctioned break in the unity
 // build. raylib's header declares unprefixed C names (Color, Rectangle,
@@ -9,6 +10,7 @@
 // once to build/ray.o and links it into every binary.
 
 namespace ray {
+using namespace math;
 
 // ZII: zero is transparent black.
 struct Color {
@@ -129,13 +131,32 @@ struct Font {
 // when the file can't be read or the store is full.
 Font load_font_from_file(String path, i32 size);
 
+struct TextureId {
+    u32 slot;
+    u32 generation;
+};
+
+struct Texture {
+    TextureId id;
+    u16 width;
+    u16 height;
+};
+
+enum class TextureFilter : u8 {
+    Point,
+    Bilinear,
+    Trilinear,
+};
+
+Texture load_texture_from_file(String path, TextureFilter filter);
+
 // Window. Open before any other call. The title is converted to a C string at
 // the boundary (truncated past 255 bytes). vsync syncs the buffer swap to the
 // display (no tearing) and paces the frame loop to the refresh rate; it is a
 // creation-time choice, fixed for the window's lifetime.
 void window_open(i32 width, i32 height, String title, b32 vsync);
 void window_close();
-bool window_should_close(); // close button, or Escape (raylib's default exit key)
+b32 window_should_close(); // close button, or Escape (raylib's default exit key)
 void target_fps(i32 fps);
 
 // Frame. Draw calls are valid only between frame_begin and frame_end.
@@ -144,17 +165,39 @@ void frame_end();
 void clear(Color color);
 f32  frame_time(); // seconds spent on the last frame
 
+// 2D camera, mirroring raylib's Camera2D: target is the world point pinned at
+// offset (screen pixels from the top-left), rotation is in degrees. ZII: the
+// zero camera is the identity view — world coordinates are screen
+// coordinates; zoom 0 draws as 1 (zero means default, not a collapsed view).
+struct Camera {
+    V2  target;
+    V2  offset;
+    f32 rotation;
+    f32 zoom;
+};
+
+// World-space drawing: draw calls between camera_begin and camera_end take
+// world coordinates. The pair nests inside frame_begin/frame_end; anything
+// drawn after camera_end is back in screen space (UI).
+void camera_begin(Camera camera);
+void camera_end();
+
+V2 screen_to_world(Camera camera, V2 screen);
+V2 world_to_screen(Camera camera, V2 world);
+
 // Drawing. Pixel coordinates, origin top-left.
-void draw_rect(f32 x, f32 y, f32 width, f32 height, Color color);
-void draw_text(String text, FontId font, i32 x, i32 y, i32 size, Color color); // truncated past 1023 bytes
+void fill_rect(Rect rect, Color color, f32 corner_radius);
+void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius);
+
+void draw_text(String text, FontId font, V2 pos, i32 size, Color color); // truncated past 1023 bytes
+
+void draw_texture(TextureId texture, Rect source, Rect dest, Color color);
 
 // Input.
-bool key_down(Key key);     // held right now
-bool key_pressed(Key key);  // went down this frame
-bool key_released(Key key); // went up this frame
-bool mouse_down(MouseButton button);
-bool mouse_pressed(MouseButton button);
-f32  mouse_x();
-f32  mouse_y();
-
+b32 key_down(Key key);     // held right now
+b32 key_pressed(Key key);  // went down this frame
+b32 key_released(Key key); // went up this frame
+b32 mouse_down(MouseButton button);
+b32 mouse_pressed(MouseButton button);
+V2 mouse_pos();
 } // namespace ray

@@ -24,7 +24,7 @@
 
 namespace pool {
 
-template <typename K> b32 is_nil_key(K key) {
+template <typename K> fn b32 is_nil_key(K key) {
     return key.slot == 0 && key.generation == 0;
 }
     
@@ -80,7 +80,7 @@ template <typename K, typename V, const usize N> struct Pool {
 };
 
 // Zero key when full. The claimed slot comes back zeroed, arena-style.
-template <typename K, typename V, const usize N> K alloc(Pool<K, V, N>* pool) {
+template <typename K, typename V, const usize N> fn K alloc(Pool<K, V, N>* pool) {
     u32 slot = 0;
     if (pool->free_count) {
         pool->free_count -= 1;
@@ -104,7 +104,7 @@ template <typename K, typename V, const usize N> K alloc(Pool<K, V, N>* pool) {
 }
 
 // alloc + assignment in one step; nil key (and nothing stored) when full.
-template <typename K, typename V, const usize N> K insert(Pool<K, V, N>* pool, V value) {
+template <typename K, typename V, const usize N> fn K insert(Pool<K, V, N>* pool, V value) {
     auto key = alloc(pool);
     if (!is_nil_key(key)) {
         pool->entries[key.slot].value = value;
@@ -115,7 +115,7 @@ template <typename K, typename V, const usize N> K insert(Pool<K, V, N>* pool, V
 // Frees only an exact live match; anything else — null, stale, out of range —
 // is a no-op. Returns whether a slot was actually freed, for callers with
 // external cleanup tied to the slot (GPU resources).
-template <typename K, typename V, const usize N> b32 free(Pool<K, V, N>* pool, K key) {
+template <typename K, typename V, const usize N> fn b32 free(Pool<K, V, N>* pool, K key) {
     u32 slot = key.slot;
     if (slot >= N || (key.generation & 1) == 0 || pool->entries[slot].key.generation != key.generation) return false;
     pool->entries[slot].key.generation += 1; // odd -> even: dead; every key in the wild goes stale

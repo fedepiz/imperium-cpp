@@ -40,7 +40,7 @@ namespace {
 
 // Internal — callers go through push. A null or exhausted arena is a
 // budgeting bug: no null checks, growing on one faults right here.
-template <typename T> void grow(Vec<T>* vec, usize new_capacity) {
+template <typename T> fn void grow(Vec<T>* vec, usize new_capacity) {
     arena::Arena* a = vec->arena;
     // In-place extension: sizeof(T) is a multiple of alignof(T), so when our
     // block ends at the arena watermark the next allocation starts exactly
@@ -59,7 +59,7 @@ template <typename T> void grow(Vec<T>* vec, usize new_capacity) {
 
 } // namespace
 
-template <typename T> Vec<T> make_vec(arena::Arena* arena, usize capacity) {
+template <typename T> fn Vec<T> make_vec(arena::Arena* arena, usize capacity) {
     Vec<T> result   = {};
     result.arena    = arena;
     result.capacity = capacity;
@@ -68,7 +68,7 @@ template <typename T> Vec<T> make_vec(arena::Arena* arena, usize capacity) {
     return result;
 }
 
-template <typename T> Vec<T> make_vec(arena::Arena* arena, Slice<T> slice) {
+template <typename T> fn Vec<T> make_vec(arena::Arena* arena, Slice<T> slice) {
     Vec<T> result = make_vec<T>(arena, slice.len);
     if (result.capacity < slice.len) return result; // allocation failed — empty vec
     if (slice.len) memcpy(result.data, slice.data, slice.len * sizeof(T));
@@ -76,13 +76,13 @@ template <typename T> Vec<T> make_vec(arena::Arena* arena, Slice<T> slice) {
     return result;
 }
 
-template <typename T> void push(Vec<T>* vec, T value) {
+template <typename T> fn void push(Vec<T>* vec, T value) {
     if (vec->len == vec->capacity) grow(vec, vec->capacity ? vec->capacity * 2 : 8);
     vec->data[vec->len] = value;
     vec->len += 1;
 }
 
-template <typename T> void push_all(Vec<T>* vec, Slice<T> items) {
+template <typename T> fn void push_all(Vec<T>* vec, Slice<T> items) {
     usize needed = vec->len + items.len;
     if (needed > vec->capacity) {
         usize new_capacity = vec->capacity ? vec->capacity * 2 : 8;
@@ -95,16 +95,16 @@ template <typename T> void push_all(Vec<T>* vec, Slice<T> items) {
 
 // View of the current contents; grows/pushes invalidate it (the vec may
 // relocate), so take it when the vec is done being built.
-template <typename T> Slice<T> slice(const Vec<T>* vec) {
+template <typename T> fn Slice<T> slice(const Vec<T>* vec) {
     return {vec->len, vec->data};
 }
 
-template <typename T> void pop(Vec<T>* vec) {
+template <typename T> fn void pop(Vec<T>* vec) {
     ASSERT(vec->len > 0);
     vec->len -= 1;
 }
 
-template <typename T> void clear(Vec<T>* vec) {
+template <typename T> fn void clear(Vec<T>* vec) {
     vec->len = 0;
 }
 

@@ -24,7 +24,7 @@
 
 namespace {
 
-b32 test_arena() {
+fn b32 test_arena() {
     arena::Arena a = {};
     arena::reserve(&a, 100 * 1024); // rounds up to a commit-chunk multiple
     CHECK(a.base != 0 && a.size >= 100 * 1024 && a.size % (64 * 1024) == 0 && a.used == 0);
@@ -63,7 +63,7 @@ b32 test_arena() {
     return true;
 }
 
-b32 test_vec() {
+fn b32 test_vec() {
     arena::Arena a = {};
     arena::reserve(&a, 4 * 1024 * 1024);
 
@@ -106,7 +106,7 @@ b32 test_vec() {
     return true;
 }
 
-b32 test_list() {
+fn b32 test_list() {
     arena::Arena a = {};
     arena::reserve(&a, 4 * 1024 * 1024);
 
@@ -174,7 +174,7 @@ b32 test_list() {
     return true;
 }
 
-b32 test_string() {
+fn b32 test_string() {
     CHECK(string::equals(String{}, ""));
     CHECK(string::equals("Roma", "Roma"));
     CHECK(!string::equals("Roma", "Rom") && !string::equals("Roma", "Ostia"));
@@ -195,7 +195,7 @@ b32 test_string() {
     return true;
 }
 
-b32 test_file_io() {
+fn b32 test_file_io() {
     arena::Arena a = {};
     arena::reserve(&a, 1024 * 1024);
 
@@ -240,7 +240,7 @@ b32 test_file_io() {
     return true;
 }
 
-b32 test_tabula() {
+fn b32 test_tabula() {
     arena::Arena a = {};
     arena::reserve(&a, 1024 * 1024);
 
@@ -327,7 +327,7 @@ b32 test_tabula() {
     return true;
 }
 
-b32 test_tabula_errors() {
+fn b32 test_tabula_errors() {
     arena::Arena a = {};
     arena::reserve(&a, 1024 * 1024);
 
@@ -379,7 +379,7 @@ struct TestKey {
     u32 generation;
 };
 
-b32 test_pool() {
+fn b32 test_pool() {
     pool::Pool<TestKey, u64, 4> p = {}; // slot 0 is the dummy; 3 usable
     TestKey null_key = {};
     CHECK(p.live_count == 0 && &p[null_key] == &p.entries[0].value); // ZII: null key -> dummy
@@ -427,7 +427,7 @@ b32 test_pool() {
     return true;
 }
 
-b32 test_math() {
+fn b32 test_math() {
     math::Rect r = {10, 20, 30, 40};
     CHECK(math::contains(r, {10, 20}) && math::contains(r, {39.9f, 59.9f}));    // corners: min in
     CHECK(!math::contains(r, {40, 30}) && !math::contains(r, {20, 60}));        // ...max out (half-open)
@@ -438,9 +438,10 @@ b32 test_math() {
     return true;
 }
 
+// The field can't be named `fn` — that's the function keyword (a macro).
 struct Test {
     const char* name;
-    b32 (*fn)();
+    b32 (*func)();
 };
 
 const Test TESTS[] = {
@@ -464,7 +465,7 @@ int main() {
         // Name goes out before the test runs, so a crash names its culprit.
         printf("%s ...", TESTS[i].name);
         fflush(stdout);
-        if (TESTS[i].fn()) {
+        if (TESTS[i].func()) {
             printf(" ok\n");
         } else {
             printf("\n");
