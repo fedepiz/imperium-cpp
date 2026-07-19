@@ -133,14 +133,19 @@ fn void camera_update(MovingCamera* camera, math::V2 dir, f32 dt) {
     camera->inner.target.y += camera->velocity.y * dt;
 }
 
+fn math::Rect camera_view_rect(MovingCamera camera, math::V2 screen_size) {
+    math::V2 view_tl = ray::screen_to_world(camera.inner, {0, 0});
+    math::V2 view_br = ray::screen_to_world(camera.inner, screen_size);
+    return {view_tl.x, view_tl.y, view_br.x - view_tl.x, view_br.y - view_tl.y};
+}
+
 fn void draw_board_layer(game::DrawMap draw_map, MovingCamera camera) {
     // World space: the square stays put while the camera pans over it, and
     // the mouse converts through the same camera the drawing uses.
     ray::camera_begin(camera.inner);
 
     for (const auto& item : draw_map.items) {
-        ray::fill_rect(item.bounds, item.color, 8);
-        ray::stroke_rect(item.bounds, 4, ray::GREEN, 8);
+        ray::fill_rect(item.bounds, item.color, 0);
     }
 
     ray::camera_end();
@@ -163,7 +168,15 @@ struct TimeState {
     f32 accum;
 };
 
-usize time_update(TimeState* state) {
+fn void time_update(TimeState* time, TimeCommand command) {
+    time->paused ^= command.toggle_pause;
+    if (command.set_speed > 0) {
+        time->paused = false;
+        time->speed  = min(command.set_speed, MAX_SPEED);
+    }
+}
+
+fn usize time_tick(TimeState* state) {
     auto delta = ray::frame_time();
     state->accum += delta * state->speed * !state->paused;
     usize ticks = (usize)(state->accum);
@@ -279,19 +292,19 @@ int main() {
 
     TimeState time = {};
     time.speed     = 1;
+    time.paused    = true;
 
     arena::Arena permanent_arena = {};
     arena::reserve(&permanent_arena, 1 * GB);
 
     game::World* world = arena::allocate<game::World>(&permanent_arena);
+    game::initialize(&frame_arena, world);
 
     while (!ray::window_should_close()) {
         arena::reset(&frame_arena);
 
         auto commands = vec::make_vec<Command>(&frame_arena, 256);
         key_input(&commands);
-
-        auto draw_map = game::draw_map(&frame_arena, world);
 
         auto ui_data = game::extract_ui_data(&frame_arena, world);
         fill_ui_data(&ui_data, &frame_arena, &time);
@@ -317,18 +330,17 @@ int main() {
         auto game_commands = vec::make_vec<game::Command>(&frame_arena, 8);
 
         for (const auto& command : commands) {
-            if (command.reload_ui) load_ui(&hud);
-            {
-                time.paused ^= command.time.toggle_pause;
-                if (command.time.set_speed > 0) {
-                    time.paused = false;
-                    time.speed  = min(command.time.set_speed, MAX_SPEED);
-                }
-            }
             if (command.log_msg.len) LOG("command: %.*s", (int)command.log_msg.len, command.log_msg.data);
+            if (command.reload_ui) load_ui(&hud);
+            time_update(&time, command.time);
             camera_update(&camera, command.camera_move, ray::frame_time());
             if (command.game.kind != game::CommandKind::Nil) vec::push(&game_commands, command.game);
         }
+
+        // After camera_update, so the culling rect is this frame's view.
+        math::V2 screen_size  = {(f32)config.screen_width, (f32)config.screen_height};
+        auto     visible_rect = camera_view_rect(camera, screen_size);
+        auto     draw_map     = game::draw_map(&frame_arena, world, visible_rect);
 
         ray::frame_begin();
         ray::clear({40, 40, 46, 255});
@@ -336,7 +348,7 @@ int main() {
         render_ui_commands(ui_frame.commands, font.id);
         ray::frame_end();
 
-        usize num_days = time_update(&time);
+        usize num_days = time_tick(&time);
 
         game::TickCommands tick_commands = {
             .commands = vec::slice(game_commands),

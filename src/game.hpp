@@ -4,12 +4,65 @@
 #include "math.hpp"
 #include "string.hpp"
 #include "arena.hpp"
+#include "file_io.hpp"
 #include "tabula.hpp"
 #include "ui/data.hpp"
 #include "vec.hpp"
 
 namespace game {
 using namespace arena;
+
+// The map of the world. Use sensible defaults for memory allocation
+constexpr usize MAP_MAX_WIDTH  = 2000;
+constexpr usize MAP_MAX_HEIGHT = 2000;
+constexpr usize MAP_MAX_SIZE   = MAP_MAX_WIDTH * MAP_MAX_HEIGHT;
+
+// World-space pixels per cell edge; drawing and culling share it.
+constexpr f32 CELL_SIZE = 24;
+
+struct TerrainType {
+    String      name;
+    math::Color color;
+    char        sigil;
+    b32         passable;
+};
+
+inline const TerrainType TERRAIN_TYPES[] = {
+    TerrainType{.name = "Water", .color = {32, 96, 168, 255}, .sigil = '~', .passable = false},
+    TerrainType{.name = "Land", .color = {88, 140, 72, 255}, .sigil = '.', .passable = false},
+    TerrainType{.name = "Road", .color = {148, 124, 88, 255}, .sigil = '#', .passable = true},
+};
+
+constexpr usize NUM_TERRAIN_TYPES = sizeof(TERRAIN_TYPES) / sizeof(TERRAIN_TYPES[0]);
+
+struct WorldCell {
+    u8 terrain_type_idx;
+};
+
+struct CellPos {
+    i32 x;
+    i32 y;
+};
+
+struct WorldMap {
+    // Actual logical size of the map, in cells.
+    i32 width;
+    i32 height;
+    // Grid of tiles
+    Array<WorldCell, MAP_MAX_SIZE> grid;
+
+    // Indexing outside the logical size is a bug: without the ASSERT an
+    // x beyond width silently reads the next row.
+    const WorldCell& operator[](CellPos pos) const {
+        ASSERT(pos.x >= 0 && pos.x < width && pos.y >= 0 && pos.y < height);
+        return grid[(usize)pos.x + (usize)width * (usize)pos.y];
+    }
+
+    WorldCell& operator[](CellPos pos) {
+        ASSERT(pos.x >= 0 && pos.x < width && pos.y >= 0 && pos.y < height);
+        return grid[(usize)pos.x + (usize)width * (usize)pos.y];
+    }
+};
 
 struct Thing;
 
@@ -20,8 +73,6 @@ struct Id {
 
     operator b32() const;
 };
-
-constexpr Id NIL = {};
 
 fn b32 is_valid(Id id) { return id.slot != 0 && id.generation % 2 == 1; }
 
@@ -41,14 +92,23 @@ struct Thing {
     b32 marked_for_despawn;
     // Offset and length in name buffer
     Name name;
+    // On-map position, only relevant for entities that are on map.
+    CellPos cell_pos;
 };
 
 constexpr usize NUM_ENTITIES    = 32000;
 constexpr usize NAME_BUFFER_LEN = 1024 * 1024;
 
+// The probing counterpart of operator[]: callers that legitimately ask
+// "is this cell on the map?" test here instead of trapping.
+fn b32 in_bounds(const WorldMap* map, CellPos pos) {
+    return pos.x >= 0 && pos.x < map->width && pos.y >= 0 && pos.y < map->height;
+}
+
 // Authoritative game state. ZII: the all-zero world is valid and empty —
 // slot 0 is the permanently-zeroed dummy, the first spawn takes slot 1.
 struct World {
+    WorldMap world_map;
     // Dynamic array of char containing the name buffer
     DynArray<char, NAME_BUFFER_LEN> name_buffer;
     // Array of things
@@ -204,18 +264,18 @@ fn ui::data::Data extract_ui_data(Arena* arena, const World* world) {
         ui::data::bind_global(&data, "DATE", date);
     }
 
-    {
-        ui::data::bind_global(&data, "INTERACTION", "yes");
-        ui::data::bind_global(&data, "INT_TITLE", "Title goes here");
-        ui::data::bind_global(&data, "INT_TEXT", "The description would go here");
-        ui::data::begin_list(&data, "choices");
-        ui::data::begin_row(&data);
-        ui::data::bind(&data, "INDEX", "1");
-        ui::data::bind(&data, "CHOICE", "Yes");
-        ui::data::begin_row(&data);
-        ui::data::bind(&data, "INDEX", "2");
-        ui::data::bind(&data, "CHOICE", "No");
-    }
+    // {
+    //     ui::data::bind_global(&data, "INTERACTION", "yes");
+    //     ui::data::bind_global(&data, "INT_TITLE", "Title goes here");
+    //     ui::data::bind_global(&data, "INT_TEXT", "The description would go here");
+    //     ui::data::begin_list(&data, "choices");
+    //     ui::data::begin_row(&data);
+    //     ui::data::bind(&data, "INDEX", "1");
+    //     ui::data::bind(&data, "CHOICE", "Yes");
+    //     ui::data::begin_row(&data);
+    //     ui::data::bind(&data, "INDEX", "2");
+    //     ui::data::bind(&data, "CHOICE", "No");
+    // }
     return data;
 }
 
@@ -228,21 +288,123 @@ struct DrawMap {
     Slice<MapItem> items;
 };
 
-fn DrawMap draw_map(Arena* arena, const World* world) {
-    DrawMap out = {};
-    // Some test items
-    auto items = vec::make_vec<MapItem>(arena, 100);
-    auto size  = math::splat(60);
-    vec::push(&items, MapItem{
-                          .bounds = math::rect_with_center_and_size({100, 100}, size),
-                          .color  = math::RED,
-                      });
-    vec::push(&items, MapItem{
-                          .bounds = math::rect_with_center_and_size({200, 200}, size),
-                          .color  = math::BLUE,
-                      });
+// Emits only the cells intersecting `visible` (the camera's view in world
+// space), so the per-frame cost is bounded by screen size, not map size.
+fn DrawMap draw_map(Arena* arena, const World* world, math::Rect visible) {
+    const WorldMap* map = &world->world_map;
+
+    // Cells are centered at (x, y) * CELL_SIZE. One cell of slack on each
+    // edge covers the half-cell center offset and truncation-toward-zero on
+    // negative coordinates; the clamp keeps operator[] in bounds.
+    i32 x0 = clamp((i32)(visible.x / CELL_SIZE) - 1, 0, map->width);
+    i32 x1 = clamp((i32)((visible.x + visible.w) / CELL_SIZE) + 2, 0, map->width);
+    i32 y0 = clamp((i32)(visible.y / CELL_SIZE) - 1, 0, map->height);
+    i32 y1 = clamp((i32)((visible.y + visible.h) / CELL_SIZE) + 2, 0, map->height);
+
+    DrawMap out   = {};
+    auto    items = vec::make_vec<MapItem>(arena, (usize)(x1 - x0) * (usize)(y1 - y0));
+    auto    size  = math::splat(CELL_SIZE);
+    for (i32 y = y0; y < y1; y++) {
+        for (i32 x = x0; x < x1; x++) {
+            auto  tile         = (*map)[CellPos{x, y}];
+            auto& terrain_type = TERRAIN_TYPES[tile.terrain_type_idx];
+            auto  bounds       = math::rect_with_center_and_size({x * size.x, y * size.y}, size);
+            auto  item         = MapItem{
+                         .bounds = bounds,
+                         .color  = terrain_type.color,
+            };
+            vec::push(&items, item);
+        }
+    }
     out.items = vec::slice(items);
     return out;
 }
+
+namespace {
+// Load the map from a text file: each character is one cell, matched against
+// TerrainType::sigil. A row is a non-empty line — blank lines anywhere are
+// formatting noise, and an intentional all-water row is written explicitly.
+// The longest row sets width; ragged rows leave their tail cells zero
+// (Water). The arena only holds the file bytes while parsing — a scratch
+// watermark reclaims them on return. Any failure logs and leaves the map
+// empty (ZII).
+fn void load_world_map(Arena* arena, String path, WorldMap* world_map) {
+    // Not `*world_map = {}`: that builds a multi-MB temporary on the stack.
+    memset(world_map, 0, sizeof(*world_map));
+
+    ScratchArena scratch(arena);
+
+    file_io::ReadFile<String> source = file_io::read_file_to_string(arena, path);
+    if (source.messages.len) {
+        String message = (*source.messages.begin()).message;
+        LOG("map: %.*s — map stays empty", (int)message.len, message.data);
+        return;
+    }
+
+    // Pass 1: dimensions. Only non-empty lines count as rows.
+    usize width    = 0;
+    usize height   = 0;
+    usize line_len = 0;
+    for (char c : source.data) {
+        if (c == '\r') continue;
+        if (c == '\n') {
+            if (line_len) {
+                width = max(width, line_len);
+                height += 1;
+            }
+            line_len = 0;
+            continue;
+        }
+        line_len += 1;
+    }
+    if (line_len) {
+        width = max(width, line_len);
+        height += 1;
+    }
+
+    if (width > MAP_MAX_WIDTH || height > MAP_MAX_HEIGHT) {
+        LOG("map: %.*s is %dx%d, max is %dx%d — clipping", (int)path.len, path.data, (int)width, (int)height,
+            (int)MAP_MAX_WIDTH, (int)MAP_MAX_HEIGHT);
+        width  = min(width, MAP_MAX_WIDTH);
+        height = min(height, MAP_MAX_HEIGHT);
+    }
+    world_map->width  = (i32)width;
+    world_map->height = (i32)height;
+
+    // Pass 2: fill cells. x doubles as the has-content test on newline, so
+    // empty lines advance no row here either.
+    b32 logged_unknown = false;
+    i32 x              = 0;
+    i32 y              = 0;
+    for (char c : source.data) {
+        if (c == '\r') continue;
+        if (c == '\n') {
+            if (x > 0) y += 1;
+            x = 0;
+            continue;
+        }
+        if ((usize)x < width && (usize)y < height) {
+            u8  idx   = 0;
+            b32 found = false;
+            for (usize t = 0; t < NUM_TERRAIN_TYPES; t++) {
+                if (TERRAIN_TYPES[t].sigil == c) {
+                    idx   = (u8)t;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && !logged_unknown) {
+                LOG("map: unknown sigil '%c' at %d,%d — cells left as %.*s", c, x, y, (int)TERRAIN_TYPES[0].name.len,
+                    TERRAIN_TYPES[0].name.data);
+                logged_unknown = true;
+            }
+            (*world_map)[{x, y}].terrain_type_idx = idx;
+        }
+        x += 1;
+    }
+}
+} // namespace
+
+fn void initialize(Arena* arena, World* world) { load_world_map(arena, "data/map.txt", &world->world_map); }
 
 } // namespace game
