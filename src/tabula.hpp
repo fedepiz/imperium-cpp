@@ -190,7 +190,7 @@ fn ParseError make_error(Parser* p, ErrorKind kind) {
     vec::push_all(&message, String{": "});
     vec::push_all(&message, error_description(kind));
 
-    return {.kind = kind, .offset = p->pos, .line = line, .col = col, .message = vec::slice(&message)};
+    return {.kind = kind, .offset = p->pos, .line = line, .col = col, .message = vec::slice(message)};
 }
 
 fn void record(Parser* p, ErrorKind kind) { vec::push(&p->errors, make_error(p, kind)); }
@@ -247,7 +247,7 @@ fn Slice<Node> parse_items(Parser* p, u32 depth) {
         }
         vec::push(&items, item.node);
     }
-    return vec::slice(&items);
+    return vec::slice(items);
 }
 
 // A keyless term: atom or block. key/op stay zero.
@@ -284,7 +284,7 @@ fn TermResult parse_term(Parser* p, u32 depth) {
                 p->pos += 1;
                 // Quoted atoms are always textual, never numbers.
                 TermResult result      = {};
-                result.node.value.text = vec::slice(&text);
+                result.node.value.text = vec::slice(text);
                 return result;
             }
             bool escape = c == '\\' && p->pos + 1 < p->text.len &&
@@ -304,7 +304,7 @@ fn TermResult parse_term(Parser* p, u32 depth) {
     // Bare atom: copy the text into the arena so the tree outlives the source.
     usize start = p->pos;
     while (p->pos < p->text.len && !is_terminator(p->text.data[p->pos])) p->pos += 1;
-    String text = arena::clone_slice(p->arena, String{p->pos - start, p->text.data + start});
+    String text = arena::clone_string(p->arena, String{p->pos - start, p->text.data + start});
 
     TermResult result = {};
     result.node.value = value_from_text(text);
@@ -370,7 +370,7 @@ fn ParseResult parse(arena::Arena* arena, String src) {
 
     ParseResult result = {};
     result.roots       = parse_items(&p, 0);
-    result.errors      = vec::slice(&p.errors);
+    result.errors      = vec::slice(p.errors);
     return result;
 }
 

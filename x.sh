@@ -28,8 +28,10 @@ done
 
 # -Wno-reorder-init-list: out-of-order designated init is our style (ZII PODs;
 # field order at the call site follows meaning, not declaration).
+# -Wno-error=unused/-Wno-error=unused-parameter: unused names (variables,
+# parameters, functions) warn without failing the build — stubs keep compiling.
 BASE_FLAGS=(-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror
-            -Wno-error=unused-variable -Wno-reorder-init-list
+            -Wno-error=unused -Wno-error=unused-parameter -Wno-reorder-init-list
             -Ithird_party/raylib/src)
 if (( RELEASE )); then
     FLAGS=($BASE_FLAGS -O2)

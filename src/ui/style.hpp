@@ -208,7 +208,7 @@ fn StyleModule parse(arena::Arena* arena, String source) {
         vec::push(&warnings, string::format(arena, "unknown key '%.*s'", (int)node.key.len, node.key.data));
     }
 
-    return {style, vec::slice(&warnings)};
+    return {style, vec::slice(warnings)};
 }
 
 } // namespace style

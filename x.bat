@@ -35,7 +35,9 @@ rem -Wno-missing-designated-field-initializers: clang 21 warning not in Apple
 rem clang; partial designated init with the rest zeroed is our ZII style.
 rem -Wno-reorder-init-list: out-of-order designated init is our style (ZII
 rem PODs; field order at the call site follows meaning, not declaration).
-set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused-variable -Wno-missing-designated-field-initializers -Wno-reorder-init-list -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src"
+rem -Wno-error=unused/-Wno-error=unused-parameter: unused names (variables,
+rem parameters, functions) warn without failing the build -- stubs keep compiling.
+set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused -Wno-error=unused-parameter -Wno-missing-designated-field-initializers -Wno-reorder-init-list -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src"
 if !RELEASE!==1 (
     set "FLAGS=!BASE_FLAGS! -O2"
     set "PROFILE=release"

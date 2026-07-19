@@ -430,10 +430,7 @@ fn PushResult push_element(Ui* ui, ElementConf conf) {
         if (state) scroll_offset = state->offset;
     }
     String text = {};
-    if (conf.text.text.len) {
-        text = arena::make_string(ui->arena, conf.text.text.len);
-        memcpy(text.data, conf.text.text.data, conf.text.text.len);
-    }
+    if (conf.text.text.len) { text = arena::clone_string(ui->arena, conf.text.text); }
 
     // Negative sizing values mean zero (the Rust builder clamped in its
     // setters; designated init clamps here, at the declaration boundary).
@@ -600,7 +597,7 @@ fn BreakResult break_text_lines(arena::Arena* arena, Text text, f32 max_width, T
                 start = i + 1;
             }
         }
-        return {vec::slice(&lines), measured};
+        return {vec::slice(lines), measured};
     }
 
     usize line_start = 0;
@@ -665,7 +662,7 @@ fn BreakResult break_text_lines(arena::Arena* arena, Text text, f32 max_width, T
         break;
     }
 
-    return {vec::slice(&lines), measured};
+    return {vec::slice(lines), measured};
 }
 
 template <MeasureText M>
@@ -1255,7 +1252,7 @@ template <MeasureText M, FrameBody B> fn Output* layout(Engine* engine, Input in
         };
         build(&ui);
     }
-    Slice<Element> nodes = vec::slice(&node_vec);
+    Slice<Element> nodes = vec::slice(node_vec);
     Output*        out   = &engine->output;
 
     measure_text_elements(&engine->frame, nodes, &engine->text_measurements, measure_text, false);
@@ -1303,8 +1300,8 @@ template <MeasureText M, FrameBody B> fn Output* layout(Engine* engine, Input in
     for (usize index = 0; index < nodes.len; ++index) {
         if (nodes[index].floating) vec::push(&floating, FloatingEntry{nodes[index].z_index, (u32)index});
     }
-    sort_floating(vec::slice(&floating));
-    for (const FloatingEntry& entry : vec::slice(&floating)) {
+    sort_floating(vec::slice(floating));
+    for (const FloatingEntry& entry : vec::slice(floating)) {
         emit_element(entry.index, nodes, out);
     }
 

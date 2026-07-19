@@ -324,7 +324,7 @@ fn Text text(Compiler* c, String source) {
     if (literal_start < source.len) {
         vec::push(&segs, Seg{layout::substr(source, literal_start, source.len), {}});
     }
-    return {vec::slice(&segs)};
+    return {vec::slice(segs)};
 }
 
 // Tokenizes a yes/no condition value (visible, enabled): yes/no or data via

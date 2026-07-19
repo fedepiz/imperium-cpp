@@ -280,15 +280,21 @@ template <typename T> T* allocate(Arena* arena, usize count = 1);
 
 ## Strings
 
-- The string type is a slice — pointer + length, not null-terminated:
+- The string type is a view — pointer + length, not null-terminated. It is
+  its own struct, distinct from `Slice<char>`: its bytes are `const` (never
+  written through a String), and it carries the two sanctioned implicit
+  conversions — from a null-terminated literal and from `Slice<char>`, so
+  builders assemble bytes in a mutable slice and the result travels as String:
 
 ```cpp
 struct String {
-    u8*   data;
-    usize count;
+    usize       len;
+    const char* data;
 
     String() = default;
-    String(const char* cstr) : data{(u8*)cstr}, count{cstr ? strlen(cstr) : 0} {}
+    String(usize len, const char* data) : len{len}, data{data} {}
+    String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
+    String(Slice<char> s) : len{s.len}, data{s.data} {}
 };
 // usage: String name = "Roma";
 ```
@@ -491,7 +497,8 @@ machine builds its own via the `third_party` command.
 
 - Commands: `clean`, `build`, `run` (rebuilds only when stale), `third_party`.
 - Flags: `-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror`
-  (unused variables warn without failing the build; `-Wno-reorder-init-list`
+  (unused names — variables, parameters, functions — warn without failing
+  the build, so stubs keep compiling; `-Wno-reorder-init-list`
   because out-of-order designated init is house style — call sites order
   fields by meaning, not declaration). The default profile is
   `-O1` with `ASSERT`/`LOG` enabled; `--release` is `-O2` with both compiled

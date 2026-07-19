@@ -1,12 +1,36 @@
 #include "core.hpp"
 #include "arena.hpp"
 #include "file_io.hpp"
+#include "game.hpp"
 #include "math.hpp"
 #include "string.hpp"
 #include "tabula.hpp"
 #include "ray.hpp"
 #include "ui/ui.hpp"
+#include "vec.hpp"
 #include <math.h>
+
+constexpr i32 MAX_SPEED = 5;
+
+struct TimeCommand {
+    b32 toggle_pause;
+    i32 set_speed; // absolute level; 0 = no change (valid speeds start at 1)
+};
+
+// One frame event from any input source — the frame's key poll or a parsed
+// UI action. Fat ZII struct: zero fields are no-ops, so each source fills
+// only what it means and apply reads them all.
+struct Command {
+    b32         reload_ui;
+    TimeCommand time;
+    // Pan intent as a normalized direction; speed, smoothing and dt stay
+    // inside camera_update.
+    math::V2 camera_move;
+    // Sim-bound command, queued into this frame's TickCommands.
+    game::Command game;
+    // Set only when the source was garbled or unknown; apply just prints it.
+    String log_msg;
+};
 
 // Run configuration, read from a tabula file. Every field has a built-in
 // default; the file overrides what it names. A missing or unreadable file —
@@ -67,51 +91,58 @@ struct MovingCamera {
     math::V2    velocity;
 };
 
-fn void camera_update(MovingCamera* camera, f32 dt) {
+// The keyboard's contribution to the frame: one Command merging everything
+// the keys say (fat struct — the unrelated fields coexist).
+fn void key_input(vec::Vec<Command>* out) {
+    Command command = {};
+    if (ray::key_pressed(ray::Key::R)) command.reload_ui = true;
+    if (ray::key_pressed(ray::Key::Space)) command.time.toggle_pause = true;
+
+    math::V2 dir = {};
+    if (ray::key_down(ray::Key::Left) || ray::key_down(ray::Key::A)) dir.x -= 1;
+    if (ray::key_down(ray::Key::Right) || ray::key_down(ray::Key::D)) dir.x += 1;
+    if (ray::key_down(ray::Key::Up) || ray::key_down(ray::Key::W)) dir.y -= 1;
+    if (ray::key_down(ray::Key::Down) || ray::key_down(ray::Key::S)) dir.y += 1;
+    f32 dir_len = sqrtf(dir.x * dir.x + dir.y * dir.y);
+    if (dir_len > 0) { // normalize so diagonals aren't faster
+        dir.x /= dir_len;
+        dir.y /= dir_len;
+    }
+    command.camera_move = dir;
+
+    for (auto speed = 1; speed <= MAX_SPEED; ++speed) {
+        ray::Key key = (ray::Key)((usize)ray::Key::Zero + speed);
+        if (ray::key_pressed(key)) { command.time.set_speed = speed; }
+    }
+
+    vec::push(out, command);
+}
+
+// dir is the frame's pan intent; smoothing turns it into velocity. Must run
+// exactly once per frame — a zero dir is what decays the velocity to rest.
+fn void camera_update(MovingCamera* camera, math::V2 dir, f32 dt) {
     constexpr f32 CAMERA_SPEED       = 300;  // px/s at full tilt
     constexpr f32 CAMERA_SMOOTH_TIME = 0.1f; // seconds to close ~63% of the velocity gap
-
-    f32 dir_x = 0;
-    f32 dir_y = 0;
-    if (ray::key_down(ray::Key::Left) || ray::key_down(ray::Key::A)) dir_x -= 1;
-    if (ray::key_down(ray::Key::Right) || ray::key_down(ray::Key::D)) dir_x += 1;
-    if (ray::key_down(ray::Key::Up) || ray::key_down(ray::Key::W)) dir_y -= 1;
-    if (ray::key_down(ray::Key::Down) || ray::key_down(ray::Key::S)) dir_y += 1;
-    f32 dir_len = sqrtf(dir_x * dir_x + dir_y * dir_y);
-    if (dir_len > 0) { // normalize so diagonals aren't faster
-        dir_x /= dir_len;
-        dir_y /= dir_len;
-    }
 
     // Exponential smoothing toward the target velocity — framerate
     // independent, and ZII-friendly: no input decays velocity to zero.
     f32 blend = 1 - expf(-dt / CAMERA_SMOOTH_TIME);
-    camera->velocity.x += (dir_x * CAMERA_SPEED - camera->velocity.x) * blend;
-    camera->velocity.y += (dir_y * CAMERA_SPEED - camera->velocity.y) * blend;
+    camera->velocity.x += (dir.x * CAMERA_SPEED - camera->velocity.x) * blend;
+    camera->velocity.y += (dir.y * CAMERA_SPEED - camera->velocity.y) * blend;
     camera->inner.target.x += camera->velocity.x * dt;
     camera->inner.target.y += camera->velocity.y * dt;
 }
 
-struct Board {
-    MovingCamera camera;
-    math::V2     square_pos; // world-space center of the toggle square
-    b32          toggle;
-};
-
-fn void draw_board_layer(Board* board, MovingCamera camera, b32 allow_click) {
+fn void draw_board_layer(game::DrawMap draw_map, MovingCamera camera) {
     // World space: the square stays put while the camera pans over it, and
     // the mouse converts through the same camera the drawing uses.
     ray::camera_begin(camera.inner);
-    {
-        auto bounds = math::rect_with_center_and_size(board->square_pos, math::splat(64));
-        auto fill   = board->toggle ? ray::BLUE : ray::RED;
-        ray::fill_rect(bounds, fill, 8);
-        ray::stroke_rect(bounds, 4, ray::GREEN, 8);
-        auto mouse_world = ray::screen_to_world(camera.inner, ray::mouse_pos());
-        if (allow_click && math::contains(bounds, mouse_world) && ray::mouse_pressed(ray::MouseButton::Left)) {
-            board->toggle ^= true;
-        }
+
+    for (const auto& item : draw_map.items) {
+        ray::fill_rect(item.bounds, item.color, 8);
+        ray::stroke_rect(item.bounds, 4, ray::GREEN, 8);
     }
+
     ray::camera_end();
 }
 
@@ -129,15 +160,20 @@ fn void load_ui(ui::Ui* hud) {
 struct TimeState {
     b32 paused;
     i32 speed;
+    f32 accum;
 };
 
-constexpr i32 MAX_SPEED = 5;
+usize time_update(TimeState* state) {
+    auto delta = ray::frame_time();
+    state->accum += delta * state->speed * !state->paused;
+    usize ticks = (usize)(state->accum);
+    state->accum -= ticks;
+    return ticks;
+}
 
 // The data the script's $VARs bind against, rebuilt every frame from
 // whatever state the game has. Formatted strings land in the frame arena.
-fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time, const Board* board) {
-    ui::data::bind_global(data, "STATUS", string::format(frame, "%s square", board->toggle ? "blue" : "red"));
-    ui::data::bind_global(data, "DATE", "Year 700");
+fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time) {
     ui::data::bind_global(data, "TIME_BUTTON", time->paused ? "Paused" : "Playing");
     ui::data::bind_global(data, "TIME_ENABLED", "yes");
     // $HAS_PLAYER and $INTERACTION stay unbound: those panels stay hidden.
@@ -152,23 +188,29 @@ fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState*
     }
 }
 
-// Applies one clicked action string to the placeholder state. Every action
-// is logged, so unwired buttons still show life.
-fn void apply_ui_action(TimeState* time, String action) {
-    LOG("ui action: %.*s", (int)action.len, action.data);
-    if (string::equals(action, "time_toggle")) {
-        time->paused = !time->paused;
-        return;
+// Turns one interpolated action string into a Command. The action is the
+// inside of a block — one record patched onto the Command schema:
+// "time_toggle = yes", "time_speed = 3", "choose = 2". Reads are
+// config-style declarative: known fields apply, unknown keys are ignored
+// (the unconditional action LOG is the tripwire for typos), and on parse
+// errors log_msg is set while whatever recovered still applies.
+fn Command parse_command(arena::Arena* frame, String action) {
+    Command command = {};
+
+    tabula::ParseResult parsed = tabula::parse(frame, action);
+    if (parsed.errors.len) {
+        command.log_msg = string::format(frame, "garbled action: %.*s", (int)action.len, action.data);
     }
-    String speed_prefix = "time_speed ";
-    if (string::starts_with(action, speed_prefix)) {
-        String                 rest   = {action.len - speed_prefix.len, action.data + speed_prefix.len};
-        string::ParseF32Result parsed = string::parse_f32(rest);
-        if (parsed.ok) {
-            time->speed  = (i32)parsed.value;
-            time->paused = false;
-        }
-    }
+
+    tabula::Node root = {};
+    root.kind         = tabula::Kind::Block;
+    root.children     = parsed.roots;
+
+    command.reload_ui         = tabula::read_b32(&root, "reload_ui", false);
+    command.time.toggle_pause = tabula::read_b32(&root, "time_toggle", false);
+    command.time.set_speed    = tabula::read_i32(&root, "time_speed", 0);
+    command.game              = game::parse_command(&root);
+    return command;
 }
 
 // Executes one frame's draw commands against ray. Commands are in draw
@@ -218,35 +260,41 @@ fn void render_ui_commands(Slice<ui::DrawCommand> commands, ray::FontId font) {
 }
 
 int main() {
-    arena::Arena arena;
-    arena::reserve(&arena, 64 * 1024 * 1024);
     // Cleared at the top of every frame: UI bindings, interpolated strings,
     // the frame's ui::Result.
     arena::Arena frame_arena = {};
-    arena::reserve(&frame_arena, 16 * 1024 * 1024);
+    arena::reserve(&frame_arena, 16 * MB);
 
-    Config config = load_config(&arena, "data/config.txt");
+    Config config = load_config(&frame_arena, "data/config.txt");
     ray::window_open(config.screen_width, config.screen_height, "imperium", config.vsync);
     if (!config.vsync) ray::target_fps(60); // CPU-side pacing only when the display isn't doing it
 
     // Zero Font on failure is fine: text falls back to the default font.
     ray::Font font = ray::load_font_from_file("assets/fonts/default.ttf", 48);
 
-    Board board      = {};
-    board.square_pos = {100, 100};
+    MovingCamera camera = {};
 
     ui::Ui hud = {};
     load_ui(&hud);
+
     TimeState time = {};
     time.speed     = 1;
 
+    arena::Arena permanent_arena = {};
+    arena::reserve(&permanent_arena, 1 * GB);
+
+    game::World* world = arena::allocate<game::World>(&permanent_arena);
+
     while (!ray::window_should_close()) {
         arena::reset(&frame_arena);
-        if (ray::key_pressed(ray::Key::R)) load_ui(&hud);
-        camera_update(&board.camera, ray::frame_time());
 
-        auto ui_data = ui::data::make(&frame_arena);
-        fill_ui_data(&ui_data, &frame_arena, &time, &board);
+        auto commands = vec::make_vec<Command>(&frame_arena, 256);
+        key_input(&commands);
+
+        auto draw_map = game::draw_map(&frame_arena, world);
+
+        auto ui_data = game::extract_ui_data(&frame_arena, world);
+        fill_ui_data(&ui_data, &frame_arena, &time);
 
         ui::Input input     = {};
         input.bounds        = {0, 0, (f32)config.screen_width, (f32)config.screen_height};
@@ -260,14 +308,42 @@ int main() {
             auto measured = ray::measure_text(text, font.id, (i32)size);
             return ui::TextMetrics{measured.size, measured.baseline};
         });
-        for (String action : ui_frame.actions)
-            apply_ui_action(&time, action);
+        for (String action : ui_frame.actions) {
+            // Unconditional log, so unwired buttons still show life.
+            LOG("ui action: %.*s", (int)action.len, action.data);
+            vec::push(&commands, parse_command(&frame_arena, action));
+        }
+
+        auto game_commands = vec::make_vec<game::Command>(&frame_arena, 8);
+
+        for (const auto& command : commands) {
+            if (command.reload_ui) load_ui(&hud);
+            {
+                time.paused ^= command.time.toggle_pause;
+                if (command.time.set_speed > 0) {
+                    time.paused = false;
+                    time.speed  = min(command.time.set_speed, MAX_SPEED);
+                }
+            }
+            if (command.log_msg.len) LOG("command: %.*s", (int)command.log_msg.len, command.log_msg.data);
+            camera_update(&camera, command.camera_move, ray::frame_time());
+            if (command.game.kind != game::CommandKind::Nil) vec::push(&game_commands, command.game);
+        }
 
         ray::frame_begin();
         ray::clear({40, 40, 46, 255});
-        draw_board_layer(&board, board.camera, !ui_frame.pointer_over_ui);
+        draw_board_layer(draw_map, camera);
         render_ui_commands(ui_frame.commands, font.id);
         ray::frame_end();
+
+        usize num_days = time_update(&time);
+
+        game::TickCommands tick_commands = {
+            .commands = vec::slice(game_commands),
+            .num_days = num_days,
+        };
+
+        game::tick(world, tick_commands);
     }
     ray::window_close();
 

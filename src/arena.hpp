@@ -101,21 +101,15 @@ template <typename T> fn Slice<T> clone_slice(Arena* arena, Slice<T> slice) {
     return out;
 }
 
-fn String make_string(Arena* arena, usize count) { return make_slice<char>(arena, count); }
-
-fn String clone_string(Arena* arena, const char* str) {
-    auto* ch = str;
-    while (true) {
-        if (*ch == '\0') break;
-        ch++;
-    }
-    usize len    = (ch - str);
-    auto  string = make_string(arena, len);
-    for (usize i = 0; i < len; ++i) {
-        string.data[i] = *str;
-        str++;
-    }
-    return string;
+// Copy a view into the arena. Strings are immutable, so this is the one way
+// to make one whose bytes the arena owns; builders that need to write bytes
+// use make_slice<char> and convert on the way out.
+fn String clone_string(Arena* arena, String s) {
+    if (s.len == 0) return {};
+    Slice<char> copy = make_slice<char>(arena, s.len);
+    if (!copy.data) return {}; // ZII: arena full -> empty string
+    memcpy(copy.data, s.data, s.len);
+    return copy;
 }
 
 } // namespace arena

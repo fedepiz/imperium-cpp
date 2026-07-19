@@ -22,6 +22,10 @@ using f64 = double;
 
 using usize = std::size_t;
 
+constexpr usize KB = 1024;
+constexpr usize MB = 1024 * KB;
+constexpr usize GB = 1024 * MB;
+
 // fn — the project function keyword: every free-function definition is
 // written `fn <return> name(...)`. Expands to inline, so a module can land in
 // more than one TU of a binary (the boundary TU) without duplicate-symbol
@@ -80,6 +84,8 @@ template <typename T, const usize N> struct Array {
         return this->data[idx];
     }
 
+    usize len() const { return N; }
+
     T* begin() { return this->data; }
     T* end() { return this->data + N; }
 
@@ -103,31 +109,88 @@ template <typename T> struct Slice {
     const T* end() const { return this->data + this->len; }
 };
 
-// Slice<char> is String. The specialization exists to add the one thing the
-// generic slice must not have: implicit construction from a null-terminated
-// string (String name = "Roma";) — a sanctioned one-off implicitness. The
-// constructors cost the aggregate, so char slices brace-init positionally:
-// {len, data}. Keep the shared body in sync with the primary template.
-template <> struct Slice<char> {
-    usize len;
-    char* data;
+// String — an immutable view of bytes: pointer + length, not null-terminated.
+// Distinct from Slice<char>: its bytes can never be written through it (const
+// data), and it carries the two sanctioned implicit conversions — from a
+// null-terminated literal (String name = "Roma";) and from Slice<char>, so
+// builders assemble into a mutable slice and the result travels as String.
+struct String {
+    usize       len;
+    const char* data;
 
-    Slice() = default;
-    Slice(usize len, char* data) : len{len}, data{data} {}
-    Slice(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{(char*)cstr} {}
+    String() = default;
+    String(usize len, const char* data) : len{len}, data{data} {}
+    String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
+    String(Slice<char> s) : len{s.len}, data{s.data} {}
 
-    char& operator[](usize idx) const {
+    const char& operator[](usize idx) const {
         ASSERT(idx < this->len);
         return this->data[idx];
     }
-
-    char* begin() { return this->data; }
-    char* end() { return this->data + this->len; }
 
     const char* begin() const { return this->data; }
     const char* end() const { return this->data + this->len; }
 };
 
-using String = Slice<char>;
+// Fixed-capacity dynamic array — Vec's shape on embedded storage, no arena.
+// ZII: the all-zero DynArray is a valid empty array. It cannot grow: push
+// reports success with a b32 and leaves the array untouched when full.
+template <typename T, const usize N> struct DynArray {
+    usize len;
+    T     data[N];
+
+    T& operator[](usize idx) {
+        ASSERT(idx < this->len);
+        return this->data[idx];
+    }
+
+    const T& operator[](usize idx) const {
+        ASSERT(idx < this->len);
+        return this->data[idx];
+    }
+
+    usize capacity() const { return N; }
+
+    T* begin() { return this->data; }
+    T* end() { return this->data + this->len; }
+
+    const T* begin() const { return this->data; }
+    const T* end() const { return this->data + this->len; }
+};
+
+template <typename T, const usize N> fn b32 push(DynArray<T, N>* array, T value) {
+    if (array->len == N) return false;
+    array->data[array->len] = value;
+    array->len += 1;
+    return true;
+}
+
+template <typename T, const usize N> fn void pop(DynArray<T, N>* array) {
+    ASSERT(array->len > 0);
+    array->len -= 1;
+}
+
+template <typename T, const usize N> fn void clear(DynArray<T, N>* array) {
+    array->len = 0;
+}
+
+// View of the current contents; valid until the array is popped or cleared.
+template <typename T, const usize N> fn Slice<T> slice(DynArray<T, N>* array) {
+    return {array->len, array->data};
+}
+
+// All-or-nothing like push: when the items don't all fit, nothing is appended.
+template <typename T, const usize N> fn b32 append(DynArray<T, N>* array, Slice<T> items) {
+    if (items.len > N - array->len) return false;
+    if (items.len) memcpy(array->data + array->len, items.data, items.len * sizeof(T));
+    array->len += items.len;
+    return true;
+}
+
+// String is not Slice<char> (its bytes are const); char buffers still append
+// it — the source is only read.
+template <const usize N> fn b32 append(DynArray<char, N>* array, String items) {
+    return append(array, Slice<char>{items.len, (char*)items.data});
+}
 
 #endif

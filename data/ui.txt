@@ -25,7 +25,7 @@ panel = {
 		id = "choices"
 		width = grow
 		template = {
-			button = { action = "choose $INDEX" text = "$CHOICE" width = grow enabled = "$ENABLED" }
+			button = { action = "choose = $INDEX" text = "$CHOICE" width = grow enabled = "$ENABLED" }
 		}
 	}
 }
@@ -47,49 +47,7 @@ panel = {
 	}
 }
 
-panel = {
-	x_pos = 0.99
-	y_pos = 0.5
-
-	width = 42%
-	min_width = 420
-	max_width = 640
-
-	align = center
-	border = yes
-
-	visible = no
-
-	heading = { text = "IMPERIUM" tooltip = "Test" }
-
-	# A global binding: the game binds $STATUS every frame.
-	label = "$STATUS"
-
-	section = "PEOPLE OF ROME"
-	list = {
-		id = "people"
-		width = grow
-		height = 320
-		min_height = 320
-		scrollable = yes
-		background = dark
-		border = yes
-		template = {
-			panel = {
-				width = grow
-				height = fit
-				label = "$NAME, age $AGE $ACTIVITY"
-				row = {
-					button = { action = "femalify $ID" text = "Make Female" visible = "$IS_MALE"}
-					button = { action = "remove $ID" text = "Remove" tooltip = "Remove the entity, whose name is $NAME."}
-				}
-			}
-		}
-	}
-}
-
-# Time controls: the clock's pause/play
-# and the player's rest/stop (a sim command). Time flows when both agree.
+# Time controls
 panel = {
 	x_pos = 0.99
 	y_pos = 0.02
@@ -98,16 +56,16 @@ panel = {
 
 	label = "$DATE"
 	row = {
-		button = { action = "time_toggle" width = grow text = "$TIME_BUTTON" enabled = "$TIME_ENABLED" }
+		button = { action = "time_toggle = yes" width = grow text = "$TIME_BUTTON" enabled = "$TIME_ENABLED" }
 		button = { action = "$PLAYER_ACTION" width = grow text = "$PLAYER_BUTTON" visible = "$HAS_PLAYER" }
 	}
-	# One button per speed level; the game fills the list up to its max
-	# speed, so the row splits itself however many levels there are.
+
+	# One button per speed level
 	list = {
 		id = "speeds"
 		direction = horizontal
 		template = {
-			button = { action = "time_speed $LEVEL" text = "$LEVEL" width = grow enabled = "$ENABLED" }
+			button = { action = "time_speed = $LEVEL" text = "$LEVEL" width = grow enabled = "$ENABLED" }
 		}
 	}
 }

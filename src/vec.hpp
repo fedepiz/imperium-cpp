@@ -93,10 +93,16 @@ template <typename T> fn void push_all(Vec<T>* vec, Slice<T> items) {
     vec->len = needed;
 }
 
+// String is not Slice<char> (its bytes are const); char builders still append
+// it — the source is only read.
+fn void push_all(Vec<char>* vec, String items) {
+    push_all(vec, Slice<char>{items.len, (char*)items.data});
+}
+
 // View of the current contents; grows/pushes invalidate it (the vec may
 // relocate), so take it when the vec is done being built.
-template <typename T> fn Slice<T> slice(const Vec<T>* vec) {
-    return {vec->len, vec->data};
+template <typename T> fn Slice<T> slice(const Vec<T> vec) {
+    return {vec.len, vec.data};
 }
 
 template <typename T> fn void pop(Vec<T>* vec) {

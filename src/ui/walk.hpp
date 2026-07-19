@@ -81,7 +81,7 @@ fn String resolve(const Ctx* ctx, ir::Text text) {
         }
         vec::push_all(&out, seg.literal);
     }
-    return vec::slice(&out);
+    return vec::slice(out);
 }
 
 // Resolves a paint. Almost always baked: only a $VAR name costs anything,
@@ -316,7 +316,7 @@ fn Slice<String> run(const ir::UiModule* module, const data::Data* data, arena::
     ctx.data         = data;
     ctx.events.arena = frame;
     walk(&ctx, u, ir::roots(module));
-    return vec::slice(&ctx.events);
+    return vec::slice(ctx.events);
 }
 
 } // namespace walk

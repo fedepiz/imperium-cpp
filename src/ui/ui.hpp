@@ -96,11 +96,11 @@ fn Slice<String> load(Ui* ui, String ui_path, String style_path) {
         vec::push(&problems, string::format(arena, "%.*s: %.*s", (int)ui_path.len, ui_path.data,
                                             (int)error.message.len, error.message.data));
     }
-    for (String warning : vec::slice(&ui->module.warnings)) {
+    for (String warning : vec::slice(ui->module.warnings)) {
         vec::push(&problems, string::format(arena, "%.*s: %.*s", (int)ui_path.len, ui_path.data, (int)warning.len,
                                             warning.data));
     }
-    return vec::slice(&problems);
+    return vec::slice(problems);
 }
 
 // One frame: lays the module out against the data and input, and returns
@@ -118,12 +118,12 @@ fn Result run(Ui* ui, arena::Arena* arena, Input input, const data::Data* data, 
     // Clone everything the caller keeps: the Result must not reach back
     // into the engine (whose buffers recycle at the next layout) or the
     // module (which dies at the next load).
-    Slice<DrawCommand> commands = arena::clone_slice(arena, vec::slice(&output->commands));
+    Slice<DrawCommand> commands = arena::clone_slice(arena, vec::slice(output->commands));
     for (DrawCommand& command : commands) {
-        if (command.text.len) command.text = arena::clone_slice(arena, command.text);
+        if (command.text.len) command.text = arena::clone_string(arena, command.text);
     }
     Slice<String> cloned_actions = arena::clone_slice(arena, actions);
-    for (String& action : cloned_actions) action = arena::clone_slice(arena, action);
+    for (String& action : cloned_actions) action = arena::clone_string(arena, action);
 
     return {commands, cloned_actions, output->is_pointer_over_ui};
 }

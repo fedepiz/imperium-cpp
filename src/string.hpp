@@ -118,4 +118,13 @@ fn ParseF32Result parse_f32(String text) {
     return {.value = (f32)(sign * value), .ok = true};
 }
 
+fn String substring(String base, usize start, usize length) {
+    start  = min(start, base.len);
+    length = min(length, base.len - start);
+    return {
+        length,
+        base.data + start,
+    };
+}
+
 } // namespace string

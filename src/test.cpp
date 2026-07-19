@@ -59,7 +59,7 @@ fn b32 test_arena() {
     for (usize i = 0; i < 256; ++i) CHECK(r[i] == 0);
 
     String s = arena::clone_string(&a, "Roma");
-    String t = arena::clone_slice(&a, s);
+    String t = arena::clone_string(&a, s);
     CHECK(t.len == 4 && string::equals(s, t) && t.data != s.data);
 
     arena::Arena dead = {};
@@ -94,7 +94,7 @@ fn b32 test_vec() {
 
     i32           backing[3] = {5, 6, 7};
     vec::Vec<i32> w          = vec::make_vec(&a, Slice<i32>{3, backing});
-    Slice<i32>    ws         = vec::slice(&w);
+    Slice<i32>    ws         = vec::slice(w);
     CHECK(w.len == 3 && ws[2] == 7 && ws.data != backing); // made from a slice = a copy
     vec::push_all(&w, Slice<i32>{3, backing});
     CHECK(w.len == 6 && w[3] == 5 && w[5] == 7);
@@ -109,6 +109,44 @@ fn b32 test_vec() {
     CHECK(broken.len == 0 && broken.capacity == 0 && broken.data == 0); // ZII soft-fail
 
     arena::release(&a);
+    return true;
+}
+
+fn b32 test_dynarray() {
+    DynArray<i32, 4> d = {};
+    CHECK(d.len == 0 && d.capacity() == 4); // ZII: zero array is valid and empty
+    for (i32 v : d) { (void)v; CHECK(false); } // ...and iterates nothing
+    clear(&d);
+
+    for (i32 i = 0; i < 4; ++i) CHECK(push(&d, i * 10));
+    CHECK(d.len == 4 && d[0] == 0 && d[3] == 30);
+    CHECK(!push(&d, 99));            // full: push refused...
+    CHECK(d.len == 4 && d[3] == 30); // ...and the array untouched
+
+    i32 sum = 0;
+    for (i32 v : d) sum += v;
+    CHECK(sum == 60);
+
+    Slice<i32> s = slice(&d);
+    CHECK(s.len == 4 && s[2] == 20 && s.data == d.data); // view, not a copy
+
+    pop(&d);
+    CHECK(d.len == 3 && push(&d, 7) && d[3] == 7); // popped capacity comes back
+
+    DynArray<i32, 4> copy = d; // POD: plain assignment copies, embedded storage stays independent
+    copy[0] = -1;
+    CHECK(copy.len == 4 && copy[3] == 7 && d[0] == 0);
+
+    clear(&d);
+    CHECK(d.len == 0 && push(&d, 1) && d[0] == 1); // reusable after clear
+
+    i32 backing[3] = {5, 6, 7};
+    CHECK(append(&d, Slice<i32>{2, backing}));
+    CHECK(d.len == 3 && d[1] == 5 && d[2] == 6);
+    CHECK(!append(&d, Slice<i32>{2, backing})); // 2 don't fit in the 1 slot left...
+    CHECK(d.len == 3 && d[2] == 6);             // ...all-or-nothing: untouched
+    CHECK(append(&d, Slice<i32>{}) && d.len == 3); // ZII: empty slice appends nothing, fits anywhere
+    CHECK(append(&d, Slice<i32>{1, backing + 2}) && d.len == 4 && d[3] == 7); // exact fill
     return true;
 }
 
@@ -1216,9 +1254,9 @@ fn b32 test_ui_ir() {
     m = I::compile(&a, "panel = { width = \"180:x\" height = \"fit:2\" min_width = 10 panel = { width = wide } }",
                    &style);
     CHECK(m.errors.len == 0);
-    CHECK(any_contains(vec::slice(&m.warnings), "bad weight"));
-    CHECK(any_contains(vec::slice(&m.warnings), "fit means weight 0"));
-    CHECK(any_contains(vec::slice(&m.warnings), "cap[:weight]"));
+    CHECK(any_contains(vec::slice(m.warnings), "bad weight"));
+    CHECK(any_contains(vec::slice(m.warnings), "fit means weight 0"));
+    CHECK(any_contains(vec::slice(m.warnings), "cap[:weight]"));
     {
         I::UiNode panel = m.nodes[I::roots(&m)];
         CHECK(panel.width == I::FIT && panel.height == I::FIT); // floating top-level fits
@@ -1270,13 +1308,13 @@ fn b32 test_ui_ir() {
         CHECK(seg_is(m.nodes[panel.first_child].visible, 0, "no", ""));
     }
     m = I::compile(&a, "panel = { visible = character_open }", &style);
-    CHECK(any_contains(vec::slice(&m.warnings), "'visible = character_open' is not yes/no or a $VAR binding"));
+    CHECK(any_contains(vec::slice(m.warnings), "'visible = character_open' is not yes/no or a $VAR binding"));
 
     // Unknown keys and missing '=' warn without failing.
     m = I::compile(&a, "panel = { frobnicate = 3 panel { } }\nlabel = \"top level\"", &style);
-    CHECK(any_contains(vec::slice(&m.warnings), "unknown key 'frobnicate'"));
-    CHECK(any_contains(vec::slice(&m.warnings), "missing '='"));
-    CHECK(any_contains(vec::slice(&m.warnings), "unknown key 'label'"));
+    CHECK(any_contains(vec::slice(m.warnings), "unknown key 'frobnicate'"));
+    CHECK(any_contains(vec::slice(m.warnings), "missing '='"));
+    CHECK(any_contains(vec::slice(m.warnings), "unknown key 'label'"));
 
     // The style bakes in; $VAR color names survive for per-frame resolution.
     ui::style::Style custom  = ui::style::default_style();
@@ -1304,7 +1342,7 @@ fn b32 test_ui_ir() {
 
     // Unknown palette names warn; the default stands.
     m = I::compile(&a, "panel = { background = acent }", &style);
-    CHECK(any_contains(vec::slice(&m.warnings), "'background = acent' is not a palette color"));
+    CHECK(any_contains(vec::slice(m.warnings), "'background = acent' is not a palette color"));
     CHECK(m.nodes[I::roots(&m)].background.color == style.palette.panel);
 
     // Recovers around parse errors; ZII empty module.
@@ -1494,6 +1532,7 @@ struct Test {
 const Test TESTS[] = {
     {"arena", test_arena},
     {"vec", test_vec},
+    {"dynarray", test_dynarray},
     {"list", test_list},
     {"string", test_string},
     {"file_io", test_file_io},
