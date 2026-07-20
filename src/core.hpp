@@ -132,6 +132,14 @@ struct String {
     const char* end() const { return this->data + this->len; }
 };
 
+// Value comparison: same bytes, wherever they live (!= comes from the C++20
+// rewrite). Two bare literals compare as pointers — wrap one side in String.
+fn bool operator==(String a, String b) {
+    if (a.len != b.len) return false;
+    if (a.len == 0 || a.data == b.data) return true;
+    return memcmp(a.data, b.data, a.len) == 0;
+}
+
 // Fixed-capacity dynamic array — Vec's shape on embedded storage, no arena.
 // ZII: the all-zero DynArray is a valid empty array. It cannot grow: push
 // reports success with a b32 and leaves the array untouched when full.

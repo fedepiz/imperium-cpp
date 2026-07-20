@@ -1,0 +1,58 @@
+# Scorer rubric
+
+The scorer receives: the blind agent's `decision_points` JSON + the real surface
+(answer key). For each decision point, map the guess to the ONE bucket that names
+the adoption move it implies. The guess is a design proposal: be honest about
+divergences, and do not rationalize a divergence into a match just because you know
+the real design. When a decision sits between two buckets, pick the one that
+implies the larger change to the API; that is the more honest signal. Score every
+decision point: if one is a self-described hedge or a duplicate of another, fold it
+into the related finding and say so in that finding's recommendation, rather than
+dropping it silently. Also turn strong items from the guess's `wished_existed` list
+into `missing-affordance` (or `hallucinated`) findings.
+
+| Bucket | Meaning | Conform-first move (fallback: teach) |
+|--------|---------|--------------------------------------|
+| match | the API is already what they reached for | keep it |
+| naming-mismatch | right shape, they reached for a different name | adopt their name (rename or add an alias) |
+| shape-mismatch | they reached for a different structure or idiom | adopt their shape (reshape toward the familiar idiom). Fallback, only if a hard constraint or safety issue forbids it: keep the API and make the unfamiliar part loud in the docs |
+| missing-affordance | they reached for something that does not exist | build what they reached for |
+| hallucinated | they confidently invented a call/key that does not exist | build it (the strongest conform signal, the literal Jazz move). Decline only if it is wrong or unsafe |
+
+## Adoption signal: how strong is the mandate to conform
+
+Signal = reach strength x conformance value.
+- Reach strength: at N=1, the agent's recorded confidence; at N>1, how many agents reached for the same shape (convergence).
+- Conformance value: a guess anchored on a well-known idiom (named in `familiar_anchor`) is worth more than a one-off.
+
+Read the base signal off the agent's confidence:
+
+| Bucket | confidence high | confidence medium | confidence low |
+|--------|-----------------|-------------------|----------------|
+| match | (no finding) | (no finding) | (no finding) |
+| naming-mismatch | MEDIUM | MEDIUM | LOW |
+| missing-affordance | MEDIUM | LOW | LOW |
+| hallucinated | HIGH | MEDIUM | LOW |
+| shape-mismatch | HIGH | HIGH | MEDIUM |
+
+Bumps: raise one level if the guess names a well-known `familiar_anchor` (the language's standard library, or a widely used package or idiom, e.g. a top-500 npm package), or (at N>1) if at least 2 agents converged on it. shape-mismatch and hallucinated carry the most weight: adopting them changes what the API fundamentally is, which is exactly the high-value conform move.
+
+## Scorer output
+
+Output exactly this JSON:
+
+```json
+{
+  "findings": [
+    {
+      "decision": "<label from the guess>",
+      "expected": "<what the agent guessed>",
+      "familiar_anchor": "<the known idiom they reached for, from the guess, or 'none'>",
+      "reality": "<what the real surface actually is>",
+      "bucket": "<one of: match | naming-mismatch | shape-mismatch | missing-affordance | hallucinated>",
+      "signal": "<one of: HIGH | MEDIUM | LOW>",
+      "recommendation": "<conform-first action: adopt their name/shape, or build what they reached for. Use the fallback (keep the API, teach via docs) ONLY when conforming is unsafe or blocked by a hard constraint, and say which constraint.>"
+    }
+  ]
+}
+```

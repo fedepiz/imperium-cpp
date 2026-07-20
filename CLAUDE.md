@@ -354,7 +354,13 @@ metaprogramming.
 - Operator overloading is for arithmetic value types only — `V2`, `V3`, `V4`,
   `Mat4`, `Rect`: `+ - * /`, plus `= default` comparisons (`==` or `<=>`).
   Never overload `->`, `()`, conversions, or any operator for "clever"
-  non-arithmetic semantics.
+  non-arithmetic semantics. Decided exception: `String` has a custom value
+  `operator==` (byte comparison, `!=` via the C++20 rewrite) — a view compares
+  by contents, never by pointer. Two bare literals still compare as pointers;
+  wrap one side in `String`. Decided exception: a view type whose range-for
+  needs an iterator shim (`game::ChildrenView` — dense u16 slots resolved to
+  `Thing*` on the fly) may define a nested `Iter` with `*`, `++`, `!=` —
+  those three, nothing more, and only in service of `begin`/`end`.
 
 ## Naming and formatting
 

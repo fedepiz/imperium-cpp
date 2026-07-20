@@ -82,6 +82,7 @@ enum class ErrorKind : u32 {
     UnexpectedCloseBrace,
     ExpectedValue,
     TooDeep,
+    UnexpectedComma, // commas are not separators; whitespace is
 };
 
 struct ParseError {
@@ -119,10 +120,11 @@ struct Parser {
 };
 
 // Bytes that end a bare scalar. All ASCII, so slicing at them always lands
-// on a UTF-8 boundary.
+// on a UTF-8 boundary. ',' terminates so "8," splits into an atom and a loud
+// UnexpectedComma instead of parsing as a silent non-number.
 fn bool is_terminator(char b) {
     return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '{' || b == '}' || b == '=' || b == '<' ||
-           b == '>' || b == '!' || b == '#' || b == '"';
+           b == '>' || b == '!' || b == '#' || b == '"' || b == ',';
 }
 
 fn bool is_space(char b) { return b == ' ' || b == '\t' || b == '\r' || b == '\n'; }
@@ -153,6 +155,7 @@ fn String error_description(ErrorKind kind) {
     case ErrorKind::UnexpectedCloseBrace: return "unexpected '}'";
     case ErrorKind::ExpectedValue: return "expected a value";
     case ErrorKind::TooDeep: return "nesting too deep";
+    case ErrorKind::UnexpectedComma: return "unexpected ',' — separate with whitespace";
     }
     return "";
 }
@@ -255,6 +258,7 @@ fn TermResult parse_term(Parser* p, u32 depth) {
     if (p->pos >= p->text.len) return {.error = make_error(p, ErrorKind::ExpectedValue)};
     char b = p->text.data[p->pos];
     if (b == '}') return {.error = make_error(p, ErrorKind::ExpectedValue)};
+    if (b == ',') return {.error = make_error(p, ErrorKind::UnexpectedComma)};
     if (b == '=' || b == '<' || b == '>' || b == '!') return {.error = make_error(p, ErrorKind::UnexpectedChar)};
 
     if (b == '{') {
@@ -399,6 +403,28 @@ fn String get_text(const Node* node, String key) { return get_value(node, key).t
 // Number of the first child with this key; 0 when missing or not numeric
 // (use get_value().is_number when a real 0 must be told apart).
 fn f32 get_number(const Node* node, String key) { return get_value(node, key).number; }
+
+// Indexed access, get's counterpart for array blocks (pos = { 0 0 }): the
+// i-th child, the nil node when out of range — indexed reads chain as safely
+// as keyed ones. Structural: keyed and bare children count alike.
+fn const Node* item(const Node* node, usize index) {
+    if (index >= node->children.len) return &NIL_NODE;
+    return &node->children.data[index];
+}
+
+// Value of the i-th child; zero Value when out of range or a block.
+fn Value item_value(const Node* node, usize index) {
+    const Node* child = item(node, index);
+    if (child->kind != Kind::Atom) return {};
+    return child->value;
+}
+
+// Text of the i-th child; empty when out of range or a block.
+fn String item_text(const Node* node, usize index) { return item_value(node, index).text; }
+
+// Number of the i-th child; 0 when out of range or not numeric
+// (use item_value().is_number when a real 0 must be told apart).
+fn f32 item_number(const Node* node, usize index) { return item_value(node, index).number; }
 
 // Typed reads with an explicit fallback for when the key is missing or the
 // value doesn't fit — for callers whose defaults aren't zero (configs).

@@ -47,11 +47,9 @@ fn String format(arena::Arena* arena, const char* fmt, ...) {
     return {(usize)len, data};
 }
 
-fn bool equals(String a, String b) {
-    if (a.len != b.len) return false;
-    if (a.len == 0) return true;
-    return memcmp(a.data, b.data, a.len) == 0;
-}
+// Prefer String's operator== at new call sites; this stays until the old
+// ones migrate.
+fn bool equals(String a, String b) { return a == b; }
 
 fn b32 starts_with(String s, String prefix) {
     return s.len >= prefix.len && (prefix.len == 0 || memcmp(s.data, prefix.data, prefix.len) == 0);

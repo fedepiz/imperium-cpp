@@ -1,1 +1,17 @@
+entity = {
+	kind = person
+	name = "TestPerson"
+	pos = { 4 3 }
+}
 
+entity = {
+	kind = town
+	name = "Town1"
+	pos = { 4 6 }
+}
+
+entity = {
+	kind = town
+	name = "Town2"
+	pos = { 8 6 }
+}

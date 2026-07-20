@@ -11,6 +11,7 @@
 #include "string.hpp"
 #include "vec.hpp"
 #include "tabula.hpp"
+#include "game.hpp"
 #include "ui/layout.hpp"
 #include "ui/style.hpp"
 #include "ui/ir.hpp"
@@ -219,9 +220,11 @@ fn b32 test_list() {
 }
 
 fn b32 test_string() {
-    CHECK(string::equals(String{}, ""));
-    CHECK(string::equals("Roma", "Roma"));
-    CHECK(!string::equals("Roma", "Rom") && !string::equals("Roma", "Ostia"));
+    CHECK(String{} == "" && String((const char*)0) == String{}); // ZII: empties equal, null or not
+    char roma[] = {'R', 'o', 'm', 'a'};
+    CHECK(String(4, roma) == "Roma" && String(4, roma) != "Rome"); // bytes, not addresses
+    CHECK(String("Roma") != "Rom" && String("Roma") != "Ostia" && String{} != "x");
+    CHECK(string::equals("Roma", "Roma")); // legacy spelling still routes through ==
     CHECK(String((const char*)0).len == 0); // ZII: null views as empty
 
     struct Case { const char* text; f32 value; b32 ok; };
@@ -331,6 +334,10 @@ fn b32 test_tabula() {
     const tabula::Node* cohorts = tabula::get(legion, "cohorts");
     CHECK(cohorts->children.len == 3 && cohorts->children[2].value.number == 3.0f);
     CHECK(cohorts->children[0].key.len == 0 && cohorts->children[0].op == tabula::Op::Nil);
+    CHECK(tabula::item_number(cohorts, 0) == 1.0f && tabula::item_number(cohorts, 2) == 3.0f);
+    CHECK(tabula::item(cohorts, 3)->kind == tabula::Kind::Atom && tabula::item_value(cohorts, 3).text.len == 0);
+    CHECK(tabula::item_text(tabula::item(legion, 99), 0).len == 0); // indexed chaining through nil stays safe
+    CHECK(tabula::item_number(legion, 0) == 0.0f); // children[0] is the name atom: text, not a number
     CHECK(string::equals(tabula::get_text(tabula::get(legion, "camp"), "site"), "roma")); // chained get
 
     usize legions = 0; // duplicate keys: visiting all matches is a plain loop
@@ -371,6 +378,72 @@ fn b32 test_tabula() {
     return true;
 }
 
+fn b32 test_game_hierarchy() {
+    arena::Arena a = {};
+    arena::reserve(&a, 32 * 1024 * 1024);
+    auto* g = arena::allocate<game::Game>(&a);
+    auto* w = &g->world;
+
+    constexpr auto LOC = game::Hierarchy::LocationOf;
+
+    // Zero game is consistent: versions match, nothing rebuilds, all empty.
+    game::hierarchy_refresh(g);
+    CHECK(game::children_of(g, LOC, game::Id{}).len == 0);
+
+    game::Thing* town  = game::spawn(w);
+    game::Thing* alice = game::spawn(w);
+    game::Thing* bob   = game::spawn(w);
+    game::Id     town_id = town->id;
+    game::set_parent(w, alice->id, LOC, town_id);
+    game::set_parent(w, bob->id, LOC, town_id);
+    CHECK(w->parents_version[0] == 2);
+    game::set_parent(w, bob->id, LOC, town_id); // same value: no bump, no rebuild
+    game::set_parent(w, game::Id{}, LOC, town_id); // nil child: no-op on the dummy
+    CHECK(w->parents_version[0] == 2 && w->things[0].parents[0].slot == 0);
+
+    game::hierarchy_refresh(g);
+    auto view = game::children_of(g, LOC, town_id);
+    CHECK(view.len == 2);
+    usize seen = 0;
+    for (game::Thing* child : view) {
+        seen += 1;
+        CHECK(child == alice || child == bob); // iterator resolves slots to Thing*
+    }
+    CHECK(seen == 2);
+    CHECK(game::children_of(g, LOC, alice->id).len == 0); // leaf: empty row
+
+    const game::Game* cg = g;
+    for (const game::Thing* child : game::children_of(cg, LOC, town_id)) { seen += child->id.slot ? 1 : 0; }
+    CHECK(seen == 4); // const overload walks the same row
+
+    // Despawn the town: flush bumps versions, rebuild drops orphaned edges,
+    // and the stale town handle resolves to the dummy's empty row.
+    game::mark_for_despawn(w, town_id);
+    game::despawn_flush(w);
+    CHECK(w->parents_version[0] == 3);
+    game::hierarchy_refresh(g);
+    CHECK(game::children_of(g, LOC, town_id).len == 0);
+
+    // Slot reuse: the new occupant starts with zero parents and an empty row
+    // even though it lives where the town did.
+    game::Thing* reuse = game::spawn(w);
+    CHECK(reuse->id.slot == town_id.slot && reuse->parents[0].slot == 0);
+    CHECK(game::children_of(g, LOC, reuse->id).len == 0);
+    // Alice's parent handle is stale now: her edge stays dropped.
+    CHECK(alice->parents[0].slot == town_id.slot && game::get(w, alice->parents[0])->id.slot == 0);
+
+    // Version wrap: != comparison survives u32 overflow.
+    w->parents_version[0]        = (u32)0 - 1;
+    g->hierarchies[0].built_version = (u32)0 - 1;
+    game::set_parent(w, alice->id, LOC, reuse->id);
+    CHECK(w->parents_version[0] == 0); // wrapped
+    game::hierarchy_refresh(g);
+    CHECK(g->hierarchies[0].built_version == 0 && game::children_of(g, LOC, reuse->id).len == 1);
+
+    arena::release(&a);
+    return true;
+}
+
 fn b32 test_tabula_errors() {
     arena::Arena a = {};
     arena::reserve(&a, 1024 * 1024);
@@ -384,6 +457,8 @@ fn b32 test_tabula_errors() {
         {"a =", tabula::ErrorKind::ExpectedValue},
         {"= 1", tabula::ErrorKind::UnexpectedChar},
         {"a ! b", tabula::ErrorKind::UnexpectedChar},
+        {"pos = { 8, 3 }", tabula::ErrorKind::UnexpectedComma},
+        {"a = 1, b = 2", tabula::ErrorKind::UnexpectedComma},
     };
     for (usize i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         tabula::ParseResult r = tabula::parse(&a, cases[i].src);
@@ -404,7 +479,15 @@ fn b32 test_tabula_errors() {
     CHECK(r.errors.len == 1 && r.errors[0].offset == 11 && r.errors[0].col == 12);
     CHECK(string::equals(tabula::get_text(&r.roots[0], "b"), "1"));
 
-    const char* junk[] = {"}}}}", "= = = =", "{{{", "a = = 1", "!!!", "\"", "{ } }"};
+    // Commas terminate the atom before erroring loudly: "8," never becomes a
+    // silent non-number, and spaced elements survive recovery.
+    r = tabula::parse(&a, "pos = { 8, 3 }");
+    CHECK(r.errors.len == 1 && r.errors[0].kind == tabula::ErrorKind::UnexpectedComma && r.errors[0].col == 10);
+    CHECK(string::equals(r.errors[0].message, "1:10: unexpected ',' — separate with whitespace"));
+    const tabula::Node* pos = &r.roots[0];
+    CHECK(tabula::item_number(pos, 0) == 8.0f && tabula::item_number(pos, 1) == 3.0f);
+
+    const char* junk[] = {"}}}}", "= = = =", "{{{", "a = = 1", "!!!", "\"", "{ } }", ",,,,", "{8,3}"};
     for (usize i = 0; i < sizeof(junk) / sizeof(junk[0]); ++i) {
         CHECK(tabula::parse(&a, junk[i]).errors.len > 0); // errors, never a hang or crash
     }
@@ -1541,6 +1624,7 @@ const Test TESTS[] = {
     {"pool", test_pool},
     {"math", test_math},
     {"hashtable", test_hashtable},
+    {"game_hierarchy", test_game_hierarchy},
     {"ui_grow", test_ui_grow},
     {"ui_compress", test_ui_compress},
     {"ui_fit", test_ui_fit},

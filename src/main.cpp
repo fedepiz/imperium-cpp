@@ -145,7 +145,10 @@ fn void draw_board_layer(game::DrawMap draw_map, MovingCamera camera) {
     ray::camera_begin(camera.inner);
 
     for (const auto& item : draw_map.items) {
-        ray::fill_rect(item.bounds, item.color, 0);
+        switch (item.style) {
+            case game::BodyShape::Rectangle: ray::fill_rect(item.bounds, item.color, 0); break;
+            case game::BodyShape::Circle: ray::fill_circle(item.bounds, item.color); break;
+        }
     }
 
     ray::camera_end();
@@ -297,8 +300,8 @@ int main() {
     arena::Arena permanent_arena = {};
     arena::reserve(&permanent_arena, 1 * GB);
 
-    game::World* world = arena::allocate<game::World>(&permanent_arena);
-    game::initialize(&frame_arena, world);
+    game::Game* game = arena::allocate<game::Game>(&permanent_arena);
+    game::initialize(&frame_arena, game);
 
     while (!ray::window_should_close()) {
         arena::reset(&frame_arena);
@@ -306,7 +309,7 @@ int main() {
         auto commands = vec::make_vec<Command>(&frame_arena, 256);
         key_input(&commands);
 
-        auto ui_data = game::extract_ui_data(&frame_arena, world);
+        auto ui_data = game::extract_ui_data(&frame_arena, game);
         fill_ui_data(&ui_data, &frame_arena, &time);
 
         ui::Input input     = {};
@@ -340,7 +343,7 @@ int main() {
         // After camera_update, so the culling rect is this frame's view.
         math::V2 screen_size  = {(f32)config.screen_width, (f32)config.screen_height};
         auto     visible_rect = camera_view_rect(camera, screen_size);
-        auto     draw_map     = game::draw_map(&frame_arena, world, visible_rect);
+        auto     draw_map     = game::draw_map(&frame_arena, game, visible_rect);
 
         ray::frame_begin();
         ray::clear({40, 40, 46, 255});
@@ -355,7 +358,7 @@ int main() {
             .num_days = num_days,
         };
 
-        game::tick(world, tick_commands);
+        game::tick(game, tick_commands);
     }
     ray::window_close();
 

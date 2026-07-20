@@ -51,11 +51,19 @@ fn Rect intersect(Rect a, Rect b) {
     return {x, y, max(min(a.x + a.w, b.x + b.w) - x, 0.0f), max(min(a.y + a.h, b.y + b.h) - y, 0.0f)};
 }
 
-fn V2 splat(f32 v) { return {v, v}; }
+constexpr fn V2 splat(f32 v) { return {v, v}; }
 
 fn Rect rect_with_center_and_size(V2 pos, V2 size) {
     auto corner = pos - size / 2;
     return {corner.x, corner.y, size.x, size.y};
+}
+
+fn Rect resize_by(Rect rect, V2 size) {
+    rect.x -= size.x / 2.0;
+    rect.y -= size.y / 2.0;
+    rect.w += size.x;
+    rect.h += size.y;
+    return rect;
 }
 
 } // namespace math

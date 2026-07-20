@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spatial design space — movement, detection, events</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg:        #f9f9f7;
+    --surface:   #fcfcfb;
+    --ink:       #0b0b0b;
+    --ink-2:     #52514e;
+    --muted:     #898781;
+    --hairline:  #e1e0d9;
+    --border:    rgba(11,11,11,0.10);
+    --cell:      #f0efec;
+    --cell-edge: #c3c2b7;
+    --a:         #2a78d6;  /* mover A — categorical slot 1 */
+    --b:         #008300;  /* mover B — categorical slot 2 */
+    --town:      #eda100;  /* town marker — categorical slot 4 */
+    --good:      #0ca30c;
+    --warn:      #fab219;
+    --crit:      #d03b3b;
+    --good-bg:   rgba(12,163,12,0.12);
+    --warn-bg:   rgba(250,178,25,0.16);
+    --crit-bg:   rgba(208,59,59,0.12);
+    --code-bg:   #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --bg:        #0d0d0d;
+      --surface:   #1a1a19;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --hairline:  #2c2c2a;
+      --border:    rgba(255,255,255,0.10);
+      --cell:      #262624;
+      --cell-edge: #383835;
+      --a:         #3987e5;
+      --b:         #008300;
+      --town:      #c98500;
+      --good-bg:   rgba(12,163,12,0.18);
+      --warn-bg:   rgba(250,178,25,0.14);
+      --crit-bg:   rgba(208,59,59,0.20);
+      --code-bg:   #232322;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:        #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --hairline:  #2c2c2a;
+    --border:    rgba(255,255,255,0.10);
+    --cell:      #262624;
+    --cell-edge: #383835;
+    --a:         #3987e5;
+    --b:         #008300;
+    --town:      #c98500;
+    --good-bg:   rgba(12,163,12,0.18);
+    --warn-bg:   rgba(250,178,25,0.14);
+    --crit-bg:   rgba(208,59,59,0.20);
+    --code-bg:   #232322;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 6px; }
+  h2 { font-size: 1.35rem; margin: 56px 0 8px; }
+  h3 { font-size: 1.05rem; margin: 28px 0 6px; }
+  p  { margin: 10px 0; color: var(--ink); }
+  p.lead { color: var(--ink-2); font-size: 1.05rem; }
+  .dim { color: var(--ink-2); }
+  .tiny { font-size: 0.82rem; color: var(--muted); }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.86em;
+  }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    overflow-x: auto;
+    line-height: 1.5;
+    margin: 8px 0 0;
+  }
+  pre code { background: none; padding: 0; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin: 16px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .grid2 .card { margin: 0; }
+
+  /* Locked-decision chips */
+  .locked { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .locked span {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 0.85rem;
+    color: var(--ink-2);
+  }
+  .locked b { color: var(--ink); font-weight: 600; }
+
+  /* Test-case figures */
+  figure { margin: 0; }
+  .topo {
+    display: grid;
+    grid-template-columns: minmax(260px, 340px) 1fr;
+    gap: 20px;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin: 12px 0;
+  }
+  @media (max-width: 720px) { .topo { grid-template-columns: 1fr; } }
+  .topo svg { width: 100%; height: auto; display: block; }
+  .topo h3 { margin: 0 0 4px; }
+  .topo p { margin: 4px 0; font-size: 0.94rem; color: var(--ink-2); }
+  .topo .verdictline { font-size: 0.88rem; margin-top: 8px; }
+
+  /* SVG vocabulary */
+  .cell    { fill: var(--cell); stroke: var(--cell-edge); stroke-width: 1; rx: 5; }
+  .mover-a { fill: var(--a); }
+  .mover-b { fill: var(--b); }
+  .ghost   { fill: none; stroke: var(--b); stroke-width: 2; stroke-dasharray: 4 3; opacity: 0.65; }
+  .ghost-a { fill: none; stroke: var(--a); stroke-width: 2; stroke-dasharray: 4 3; opacity: 0.65; }
+  .townsq  { fill: var(--town); rx: 3; }
+  .mlabel  { fill: #ffffff; font: 700 12px system-ui, sans-serif; text-anchor: middle; }
+  .glabel-b{ fill: var(--b); font: 700 12px system-ui, sans-serif; text-anchor: middle; opacity: 0.85; }
+  .glabel-a{ fill: var(--a); font: 700 12px system-ui, sans-serif; text-anchor: middle; opacity: 0.85; }
+  .note    { fill: var(--muted); font: 11px system-ui, sans-serif; text-anchor: middle; }
+  .arrow-a { fill: none; stroke: var(--a); stroke-width: 2; }
+  .arrow-b { fill: none; stroke: var(--b); stroke-width: 2; }
+  .head-a  { fill: var(--a); }
+  .head-b  { fill: var(--b); }
+  .clash   { fill: var(--crit); font: 700 15px system-ui, sans-serif; text-anchor: middle; }
+  .arrbox  { fill: var(--code-bg); stroke: var(--cell-edge); stroke-width: 1; }
+  .arrtxt  { fill: var(--ink); font: 600 11px ui-monospace, Menlo, monospace; text-anchor: middle; }
+  .arridx  { fill: var(--muted); font: 10px ui-monospace, Menlo, monospace; text-anchor: middle; }
+  .ptr     { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  .head-m  { fill: var(--muted); }
+
+  /* Status chips */
+  .chip {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 1px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--ink);
+  }
+  .chip.pass { background: var(--good-bg); }
+  .chip.fail { background: var(--crit-bg); }
+  .chip.mach { background: var(--warn-bg); }
+
+  /* Tables */
+  .tablewrap { overflow-x: auto; margin: 14px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    font-size: 0.92rem;
+  }
+  th, td { padding: 10px 12px; text-align: left; border-top: 1px solid var(--hairline); vertical-align: top; }
+  thead th { border-top: none; background: var(--code-bg); font-size: 0.82rem; color: var(--ink-2); }
+  td.center, th.center { text-align: center; }
+  tr.rec td { background: var(--good-bg); }
+
+  /* Bar charts */
+  .barchart { margin: 14px 0 4px; }
+  .barrow {
+    display: grid;
+    grid-template-columns: 190px 1fr;
+    gap: 12px;
+    align-items: center;
+    padding: 5px 0;
+  }
+  .barrow .blabel { font-size: 0.88rem; color: var(--ink-2); text-align: right; }
+  .bartrack { position: relative; height: 20px; white-space: nowrap; }
+  .bar {
+    height: 18px;
+    background: var(--a);
+    border-radius: 0 4px 4px 0;
+    display: inline-block;
+    vertical-align: middle;
+    min-width: 2px;
+  }
+  .barval { font-size: 0.85rem; color: var(--ink); margin-left: 8px; vertical-align: middle; font-variant-numeric: tabular-nums; }
+  .axisline { border-left: 2px solid var(--cell-edge); }
+
+  /* Recommendation cards */
+  .rec {
+    border-left: 4px solid var(--good);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin: 14px 0;
+  }
+  .rec.second { border-left-color: var(--a); }
+  .rec.third  { border-left-color: var(--muted); }
+  .rec h3 { margin: 0 0 4px; }
+  .rec .rank {
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .price { font-size: 0.9rem; color: var(--ink-2); margin-top: 8px; }
+  .price b { color: var(--ink); }
+
+  .callout {
+    border-left: 4px solid var(--a);
+    background: var(--surface);
+    border-radius: 0 10px 10px 0;
+    padding: 12px 18px;
+    margin: 18px 0;
+  }
+  .callout p { margin: 6px 0; }
+
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin: 8px 0 0; font-size: 0.85rem; color: var(--ink-2); }
+  .legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; margin-right: 6px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Spatial design space</h1>
+<p class="lead">Movement execution × spatial indexing for the day-tick strategy sim —
+every approach we considered, judged against the same seven meeting topologies,
+with the bookkeeping each one owes. The two choices are coupled: encounter detection is a
+spatial query made <em>while positions mutate</em>, and every scheme
+below is really an answer to one question — <strong>what does the query see mid-mutation?</strong></p>
+
+<!-- ================================================================ -->
+<h2>Already decided — stable under every option below</h2>
+<p class="dim">Nothing in this document reopens these. They were settled in conversation and
+hold for every combination on this page.</p>
+<div class="locked">
+  <span><b>Whole-cell positions</b> — cell_pos is authoritative; smooth motion is a render concern</span>
+  <span><b>On-map ⇔ no LocationOf parent + has body</b> — contained or bodiless things are not spatial</span>
+  <span><b>Pathfinding</b> — BFS, 4-way, boolean passable (road-only), on-road data discipline</span>
+  <span><b>Next-hop cache in Game</b> — (from, dest) → next cell, whole-path inserts, purge on full</span>
+  <span><b>Movers store a destination Id only</b> — goal = its current cell; despawned ⇒ cancel + log</span>
+  <span><b>Unreachable ⇒ cancel on first failed search</b></span>
+  <span><b>Speed on BodyKind</b> — cells/day, fractional accumulator on the Thing; zero = immobile</span>
+  <span><b>Auto-exit</b> — leaving the container is a prerequisite of movement</span>
+  <span><b>Non-blocking cells</b> — collision = encounter <em>event</em>, consumed by the future interaction system</span>
+  <span><b>Arrival = encounter with your destination</b> — entering it is the interaction's decision</span>
+  <span><b>Map cap 500×500</b> — makes every per-cell structure below cheap</span>
+</div>
+
+<!-- ================================================================ -->
+<h2>The test gauntlet</h2>
+<p>Every scheme is judged against these topologies. “Fires” means: emit an encounter
+event with the true pair and the true meeting cell, <em>exactly once</em>.
+Two findings up front, learned by hand-tracing all of these:</p>
+<ul>
+  <li><strong>T6 (companions) is scheme-independent.</strong> “Newly met” is a semantic notion, not a
+      detection notion — every scheme needs a tick-start co-location snapshot or interaction-layer
+      memory. The clean long-term mechanic is <em>parenting</em>: a follower becomes a LocationOf
+      child of the leader — rides for free, takes no steps, triggers nothing.</li>
+  <li><strong>T4 and T5 are the acid tests.</strong> Checking against <em>stale</em> positions creates
+      ghost encounters in chases (T5) and misses convergent arrivals (T4). Stale-snapshot schemes
+      need explicit bookkeeping for both; live-index schemes get them free.</li>
+</ul>
+
+<div class="legend">
+  <span><span class="sw" style="background:var(--a)"></span>mover A</span>
+  <span><span class="sw" style="background:var(--b)"></span>mover B</span>
+  <span><span class="sw" style="background:var(--town); border-radius:3px"></span>town</span>
+  <span><span class="sw" style="background:none; border:2px dashed var(--b); width:10px; height:10px;"></span>stale “ghost” position</span>
+</div>
+
+<!-- T1 -->
+<figure class="topo">
+  <svg viewBox="0 0 200 96" role="img" aria-label="T1: A steps into the cell where B stands">
+    <defs>
+      <marker id="ha" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M0,0 L6,3.5 L0,7 Z" class="head-a"/></marker>
+      <marker id="hb" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M0,0 L6,3.5 L0,7 Z" class="head-b"/></marker>
+      <marker id="hm" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M0,0 L6,3.5 L0,7 Z" class="head-m"/></marker>
+    </defs>
+    <g>
+      <rect class="cell" x="10"  y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="48"  y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="86"  y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="124" y="36" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="65" cy="53" r="11"/><text class="mlabel" x="65" y="57">A</text>
+    <circle class="mover-b" cx="103" cy="53" r="11"/><text class="mlabel" x="103" y="57">B</text>
+    <path class="arrow-a" d="M70,34 C80,22 92,22 100,32" marker-end="url(#ha)"/>
+    <text class="note" x="85" y="90">A steps into B's cell</text>
+  </svg>
+  <div>
+    <h3>T1 — Standing meeting</h3>
+    <p>A mover steps into a cell where someone stands. The baseline case.</p>
+    <p class="verdictline"><span class="chip pass">✓ every scheme fires</span></p>
+  </div>
+</figure>
+
+<!-- T2 -->
+<figure class="topo">
+  <svg viewBox="0 0 200 120" role="img" aria-label="T2: two movers cross within a tick and land apart">
+    <g>
+      <rect class="cell" x="10"  y="44" width="34" height="34" rx="5"/>
+      <rect class="cell" x="48"  y="44" width="34" height="34" rx="5"/>
+      <rect class="cell" x="86"  y="44" width="34" height="34" rx="5"/>
+      <rect class="cell" x="124" y="44" width="34" height="34" rx="5"/>
+      <rect class="cell" x="162" y="44" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="27" cy="61" r="11"/><text class="mlabel" x="27" y="65">A</text>
+    <circle class="mover-b" cx="141" cy="61" r="11"/><text class="mlabel" x="141" y="65">B</text>
+    <circle class="ghost-a" cx="103" cy="61" r="9"/><text class="glabel-a" x="112" y="14">A ends</text>
+    <circle class="ghost"   cx="65"  cy="61" r="9"/><text class="glabel-b" x="65" y="108">B ends</text>
+    <path class="arrow-a" d="M32,42 C50,20 84,20 98,36" marker-end="url(#ha)"/>
+    <path class="arrow-b" d="M136,82 C118,102 84,102 70,86" marker-end="url(#hb)"/>
+    <text class="clash" x="84" y="66">✕</text>
+  </svg>
+  <div>
+    <h3>T2 — Crossing</h3>
+    <p>A at cell 0, B at cell 3, both speed 2, opposite directions:
+       A walks 0→1→2, B walks 3→2→1. They exchange sides between steps and
+       <em>never share a cell at any checkpoint</em>. Should fire at the crossing.</p>
+    <p class="verdictline">
+      <span class="chip fail">✗ end-of-tick batch: phases through</span>
+      <span class="chip pass">✓ waves &amp; sequential schemes</span>
+    </p>
+  </div>
+</figure>
+
+<!-- T3 -->
+<figure class="topo">
+  <svg viewBox="0 0 220 124" role="img" aria-label="T3: adjacent swap">
+    <g>
+      <rect class="cell" x="29"  y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="67"  y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="105" y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="143" y="40" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="84" cy="57" r="11"/><text class="mlabel" x="84" y="61">A</text>
+    <circle class="mover-b" cx="122" cy="57" r="11"/><text class="mlabel" x="122" y="61">B</text>
+    <path class="arrow-a" d="M89,38 C97,26 109,26 117,36" marker-end="url(#ha)"/>
+    <path class="arrow-b" d="M117,78 C109,92 97,92 89,80" marker-end="url(#hb)"/>
+    <text class="note" x="110" y="104">one simultaneous step: exchanged,</text>
+    <text class="note" x="110" y="118">never co-occupied</text>
+  </svg>
+  <div>
+    <h3>T3 — Adjacent swap</h3>
+    <p>A and B on neighboring cells, walking toward each other. Under <em>simultaneous</em>
+       stepping they trade places without ever co-occupying — the classic pass-through.
+       Under <em>sequential</em> stepping this case cannot exist: whoever moves first steps
+       into a cell the other still occupies.</p>
+    <p class="verdictline">
+      <span class="chip fail">✗ end-of-tick batch</span>
+      <span class="chip mach">◆ waves: needs explicit swap check</span>
+      <span class="chip pass">✓ sequential: free</span>
+    </p>
+  </div>
+</figure>
+
+<!-- T4 -->
+<figure class="topo">
+  <svg viewBox="0 0 220 130" role="img" aria-label="T4: two movers converge on the same empty cell">
+    <g>
+      <rect class="cell" x="53"  y="10" width="34" height="34" rx="5"/>
+      <rect class="cell" x="15"  y="48" width="34" height="34" rx="5"/>
+      <rect class="cell" x="53"  y="48" width="34" height="34" rx="5"/>
+      <rect class="cell" x="91"  y="48" width="34" height="34" rx="5"/>
+      <rect class="cell" x="53"  y="86" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="32" cy="65" r="11"/><text class="mlabel" x="32" y="69">A</text>
+    <circle class="mover-b" cx="70" cy="27" r="11"/><text class="mlabel" x="70" y="31">B</text>
+    <path class="arrow-a" d="M45,65 L58,65" marker-end="url(#ha)"/>
+    <path class="arrow-b" d="M70,40 L70,53" marker-end="url(#hb)"/>
+    <text class="clash" x="70" y="70">✕</text>
+    <text class="note" x="148" y="68">same tick, same empty cell</text>
+  </svg>
+  <div>
+    <h3>T4 — Convergence</h3>
+    <p>Two movers arrive at the same <em>empty</em> junction cell in the same tick, then stand.
+       A stale snapshot lists nobody at that cell — if detection only consults the snapshot,
+       the encounter never fires, <em>ever</em> (both are stationary afterward, and stationary
+       things trigger no checks).</p>
+    <p class="verdictline">
+      <span class="chip pass">✓ end-of-tick sweep &amp; waves &amp; live index</span>
+      <span class="chip mach">◆ sequential over snapshot: needs a this-tick moves overlay</span>
+    </p>
+  </div>
+</figure>
+
+<!-- T5 -->
+<figure class="topo">
+  <svg viewBox="0 0 200 110" role="img" aria-label="T5: equal-speed chase, ghost at the vacated cell">
+    <g>
+      <rect class="cell" x="10"  y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="48"  y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="86"  y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="124" y="40" width="34" height="34" rx="5"/>
+      <rect class="cell" x="162" y="40" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="65" cy="57" r="11"/><text class="mlabel" x="65" y="61">A</text>
+    <circle class="ghost"  cx="103" cy="57" r="9"/><text class="glabel-b" x="103" y="26">B was here</text>
+    <circle class="mover-b" cx="141" cy="57" r="11"/><text class="mlabel" x="141" y="61">B</text>
+    <path class="arrow-a" d="M70,38 C78,28 90,28 98,36" marker-end="url(#ha)"/>
+    <path class="arrow-b" d="M146,38 C154,28 166,28 174,36" marker-end="url(#hb)"/>
+    <text class="note" x="103" y="105">A steps into the cell B just vacated</text>
+  </svg>
+  <div>
+    <h3>T5 — Equal-speed chase</h3>
+    <p>A pursues B at the same speed. Each tick A enters the cell B <em>just left</em>.
+       A stale snapshot still reports B there — without re-confirming against current
+       positions, that is a <strong>false encounter every single day</strong> of a chase that
+       never actually catches.</p>
+    <p class="verdictline">
+      <span class="chip pass">✓ live index: fleer already unlinked, truth by construction</span>
+      <span class="chip mach">◆ snapshot schemes: every candidate needs confirm-vs-current</span>
+    </p>
+  </div>
+</figure>
+
+<!-- T6 -->
+<figure class="topo">
+  <svg viewBox="0 0 220 130" role="img" aria-label="T6: companions travel together across ticks">
+    <text class="note" x="18" y="30" style="text-anchor:start">tick N</text>
+    <g>
+      <rect class="cell" x="60"  y="10" width="34" height="34" rx="5"/>
+      <rect class="cell" x="98"  y="10" width="34" height="34" rx="5"/>
+      <rect class="cell" x="136" y="10" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="70" cy="27" r="8"/><text class="mlabel" x="70" y="31" style="font-size:10px">A</text>
+    <circle class="mover-b" cx="84" cy="27" r="8"/><text class="mlabel" x="84" y="31" style="font-size:10px">B</text>
+    <path class="arrow-a" d="M96,27 L108,27" marker-end="url(#hm)"/>
+    <text class="note" x="18" y="95" style="text-anchor:start">tick N+1</text>
+    <g>
+      <rect class="cell" x="60"  y="75" width="34" height="34" rx="5"/>
+      <rect class="cell" x="98"  y="75" width="34" height="34" rx="5"/>
+      <rect class="cell" x="136" y="75" width="34" height="34" rx="5"/>
+    </g>
+    <circle class="mover-a" cx="108" cy="92" r="8"/><text class="mlabel" x="108" y="96" style="font-size:10px">A</text>
+    <circle class="mover-b" cx="122" cy="92" r="8"/><text class="mlabel" x="122" y="96" style="font-size:10px">B</text>
+    <path class="arrow-a" d="M134,92 L146,92" marker-end="url(#hm)"/>
+  </svg>
+  <div>
+    <h3>T6 — Companions</h3>
+    <p>A pair standing or walking together, tick after tick. Must fire once when they
+       first meet — and never again while together. This is <em>semantic</em>, not
+       positional: no index choice solves it. Every scheme needs the same small
+       bookkeeping (tick-start co-location snapshot), or better, the future
+       follower-as-LocationOf-child mechanic that makes the case disappear.</p>
+    <p class="verdictline"><span class="chip mach">◆ same bookkeeping in every scheme</span></p>
+  </div>
+</figure>
+
+<!-- T7 -->
+<figure class="topo">
+  <svg viewBox="0 0 200 116" role="img" aria-label="T7: arrival at the destination thing">
+    <g>
+      <rect class="cell" x="29"  y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="67"  y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="105" y="36" width="34" height="34" rx="5"/>
+      <rect class="cell" x="143" y="36" width="34" height="34" rx="5"/>
+    </g>
+    <rect class="townsq" x="111" y="42" width="22" height="22" rx="3"/>
+    <circle class="mover-a" cx="46" cy="53" r="11"/><text class="mlabel" x="46" y="57">A</text>
+    <path class="arrow-a" d="M51,34 C66,16 98,16 114,32" marker-end="url(#ha)"/>
+    <text class="note" x="100" y="92">stepping onto the destination</text>
+    <text class="note" x="100" y="106">= arrival encounter</text>
+  </svg>
+  <div>
+    <h3>T7 — Arrival</h3>
+    <p>The mover reaches its destination thing's cell. Arrival is just an encounter
+       whose counterpart is your own destination — resolution says “arrive” (stop, clear
+       order); whether you <em>enter</em> is the interaction system's call.</p>
+    <p class="verdictline"><span class="chip pass">✓ every scheme fires</span></p>
+  </div>
+</figure>
+
+<!-- ================================================================ -->
+<h2>Axis 1 — the spatial structure (who is where)</h2>
+<p>All sizes at the 500×500 cap (250k cells), 32k things, u16 slots. The two serious
+candidates differ in one property only: <strong>snapshot vs live</strong>.</p>
+
+<div class="grid2">
+<div class="card">
+  <h3>S1 — Rebuilt CSR over cells <span class="tiny">(snapshot)</span></h3>
+  <svg viewBox="0 0 360 168" style="width:100%; height:auto; margin:10px 0" role="img" aria-label="CSR structure: row_start prefix array indexing into a packed children array">
+    <text class="arridx" x="30" y="14" style="text-anchor:start">row_start[cell+1] — prefix sums</text>
+    <g>
+      <rect class="arrbox" x="30"  y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="50"  y="37">0</text><text class="arridx" x="50"  y="60">c0</text>
+      <rect class="arrbox" x="72"  y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="92"  y="37">0</text><text class="arridx" x="92"  y="60">c1</text>
+      <rect class="arrbox" x="114" y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="134" y="37">2</text><text class="arridx" x="134" y="60">c2</text>
+      <rect class="arrbox" x="156" y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="176" y="37">2</text><text class="arridx" x="176" y="60">c3</text>
+      <rect class="arrbox" x="198" y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="218" y="37">3</text><text class="arridx" x="218" y="60">c4</text>
+      <text class="arrtxt" x="256" y="37">…</text>
+    </g>
+    <g>
+      <rect class="arrbox" x="30"  y="98" width="40" height="26" rx="4"/><text class="arrtxt" x="50"  y="115">7</text>
+      <rect class="arrbox" x="72"  y="98" width="40" height="26" rx="4"/><text class="arrtxt" x="92"  y="115">12</text>
+      <rect class="arrbox" x="114" y="98" width="40" height="26" rx="4"/><text class="arrtxt" x="134" y="115">3</text>
+      <text class="arrtxt" x="172" y="115">…</text>
+    </g>
+    <path class="ptr" d="M92,48 C80,70 62,80 52,94" marker-end="url(#hm)"/>
+    <path class="ptr" d="M134,48 C134,66 134,80 134,94" marker-end="url(#hm)"/>
+    <text class="arridx" x="30" y="142" style="text-anchor:start">children[] — packed slots, grouped by cell;</text>
+    <text class="arridx" x="30" y="158" style="text-anchor:start">cell c1's things live at [start[c1], start[c2])</text>
+  </svg>
+  <p class="dim" style="font-size:0.9rem">The HierarchyIndex pattern: version-stamped, counting-sort rebuild
+  where mutations stop. <strong>Exact only at rebuild instants</strong> — any consumer running during
+  movement sees the past. That staleness is the root of all the patch machinery in the matrix.</p>
+  <p class="tiny">Rebuild: 500KB memset + 250k prefix pass + two 32k passes ≈ 0.1–0.3ms. Fits the house
+  derived-state pattern exactly.</p>
+</div>
+
+<div class="card">
+  <h3>S3 — Linked grid <span class="tiny">(live)</span></h3>
+  <svg viewBox="0 0 360 150" style="width:100%; height:auto; margin:10px 0" role="img" aria-label="Linked grid: head per cell chains through next per slot">
+    <text class="arridx" x="30" y="14" style="text-anchor:start">head[cell] — first thing at each cell (0 = empty)</text>
+    <g>
+      <rect class="arrbox" x="30"  y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="50"  y="37">0</text><text class="arridx" x="50"  y="60">c0</text>
+      <rect class="arrbox" x="72"  y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="92"  y="37">7</text><text class="arridx" x="92"  y="60">c1</text>
+      <rect class="arrbox" x="114" y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="134" y="37">3</text><text class="arridx" x="134" y="60">c2</text>
+      <rect class="arrbox" x="156" y="20" width="40" height="26" rx="4"/><text class="arrtxt" x="176" y="37">0</text><text class="arridx" x="176" y="60">c3</text>
+      <text class="arrtxt" x="214" y="37">…</text>
+    </g>
+    <g>
+      <rect class="arrbox" x="72"  y="98" width="52" height="26" rx="4"/><text class="arrtxt" x="98"  y="115">7 → 12</text>
+      <rect class="arrbox" x="132" y="98" width="56 " height="26" rx="4"/><text class="arrtxt" x="160" y="115">12 → 0</text>
+    </g>
+    <path class="ptr" d="M92,48 C92,66 94,80 96,94" marker-end="url(#hm)"/>
+    <path class="ptr" d="M124,115 L130,115" marker-end="url(#hm)"/>
+    <text class="arridx" x="262" y="105">move = unlink + relink,</text>
+    <text class="arridx" x="262" y="119">O(1), always fresh</text>
+    <text class="arridx" x="30" y="144" style="text-anchor:start">next[slot] — chain through co-located things</text>
+  </svg>
+  <p class="dim" style="font-size:0.9rem"><code>head[cell]</code> + intrusive <code>next[slot]</code> chains,
+  maintained by every position/on-mapness mutation (spawn, despawn, set_parent, the one blessed
+  cell_pos writer). <strong>Exact at every instant</strong> — mid-movement queries are truth. Slot 0
+  being the permanent dummy makes 0 a valid ZII “empty” sentinel everywhere.</p>
+  <p class="tiny">Price: invariant discipline. A missed maintenance site corrupts silently — the
+  validation pass gains a check (every chained thing's cell_pos matches its chain; chain
+  population == on-map population).</p>
+</div>
+</div>
+
+<div class="grid2" style="margin-top:14px">
+<div class="card">
+  <h3>S2 — Sorted (cellkey, slot) array</h3>
+  <p class="dim" style="font-size:0.9rem">32k pairs sorted by packed cell key, rebuilt like S1;
+  query = binary-search range. Memory independent of map size — but at the 500×500 cap S1
+  dominates it (O(1) row lookup vs log n). The fallback if the map cap ever grows huge again.</p>
+</div>
+<div class="card">
+  <h3>S4 — Hashtable cell → chain &nbsp;·&nbsp; S5 — No index</h3>
+  <p class="dim" style="font-size:0.9rem"><strong>S4</strong> buys memory proportional to
+  <em>occupied</em> cells — worth it only when a full head[] table doesn't fit. At this cap it adds
+  hashing and growth-invalidation for no win. <strong>S5</strong> (linear scan per query) is live
+  truth with zero maintenance — and O(steps × things) inside encounter detection: hundreds of
+  millions of reads per 30-day batch. Prototype-only.</p>
+</div>
+</div>
+
+<h3>Memory at the 500×500 cap</h3>
+<p class="dim">The surprise: the two serious candidates cost <strong>identical RAM</strong> — the
+difference is purely rebuild-vs-incremental, never size.</p>
+<div class="barchart" role="img" aria-label="Memory: CSR 564KB, linked grid 564KB, sorted array 256KB, linear scan 0">
+  <div class="barrow"><span class="blabel">S1 rebuilt CSR</span><span class="bartrack axisline"><span class="bar" style="width:72%"></span><span class="barval">564 KB</span></span></div>
+  <div class="barrow"><span class="blabel">S3 linked grid</span><span class="bartrack axisline"><span class="bar" style="width:72%"></span><span class="barval">564 KB</span></span></div>
+  <div class="barrow"><span class="blabel">S2 sorted array</span><span class="bartrack axisline"><span class="bar" style="width:32.7%"></span><span class="barval">256 KB</span></span></div>
+  <div class="barrow"><span class="blabel">S5 linear scan</span><span class="bartrack axisline"><span class="bar" style="width:0"></span><span class="barval">0</span></span></div>
+</div>
+<p class="tiny">S3 gains +64 KB if a prev[] array is added for O(1) unlink — chains are short, so
+walk-to-unlink is fine and prev[] can wait.</p>
+
+<!-- ================================================================ -->
+<h2>Axis 2 — the movement executor (when do steps happen, when do checks run)</h2>
+
+<div class="grid2">
+<div class="card">
+  <h3>M1 — Batch end-of-tick</h3>
+<pre><code>for each mover: walk full budget
+rebuild index   // once
+sweep co-occupied cells → events</code></pre>
+  <p class="dim" style="font-size:0.9rem">Cheapest possible: the one rebuild the tick does anyway.
+  <strong>Phase-through is structural</strong> — fast movers cross within the day and are never seen
+  together (T2, T3). Road encounters can only ever be flavor; interception can never be a mechanic.
+  Events fire against final positions: honest state, but for a crossing there is no meeting cell
+  to report at all.</p>
+</div>
+
+<div class="card">
+  <h3>M2 — Lockstep waves</h3>
+<pre><code>while any budget remains:
+  for each mover:
+    step 1 cell  // record from→to
+  rebuild index
+  same-cell + swap pairs → resolve</code></pre>
+  <p class="dim" style="font-size:0.9rem">The most honest simultaneity: within a wave, order genuinely
+  doesn't matter — checks run after the wave against refreshed truth. Chases and races are fair by
+  construction. Owes: the explicit swap check (T3), rebuild × waves × days, and an ordering rule when
+  one thing lands in two same-wave events.</p>
+</div>
+
+<div class="card">
+  <h3>M3 / M4 — Sequential, inline resolution</h3>
+<pre><code>// M4 — rounds:
+while any budget remains:
+  for each mover:
+    step 1 cell
+    query entered cell (live)
+    → resolve inline
+// M3: drop the outer loop —
+// each mover walks all day</code></pre>
+  <p class="dim" style="font-size:0.9rem">The handler runs at the meeting instant, sees the exact
+  meeting cell, and can halt both parties by zeroing budgets — later movers observe the consequences.
+  Detection completeness depends entirely on Axis 1 (see matrix). <strong>M3's artifact:</strong> early
+  slots move first <em>all day</em> — an equal-speed chase becomes catchable or not by slot order.
+  M4's round-robin interleaving approximates simultaneity and fixes that for ~3 lines of loop.</p>
+</div>
+
+<div class="card">
+  <h3>M5 — Intention / commit</h3>
+<pre><code>collect all intended steps as data
+resolve conflicts symbolically
+  (same-target = converge, reversed = swap)
+commit all moves
+fire derived events</code></pre>
+  <p class="dim" style="font-size:0.9rem">The lockstep-multiplayer formalism: perfect, order-free
+  simultaneity. At speeds &gt; 1 conflict analysis needs path-overlap reasoning across multi-cell
+  intents, and a resolution that halts a mover must <em>retract</em> already-planned intents.
+  Machinery out of proportion to a single-player sim whose interactions want to run inline.
+  Named for completeness; not recommended.</p>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<h2>The matrix — where the bookkeeping lives</h2>
+<p>The central finding of the whole exploration: <strong>the bookkeeping is not a property of either
+axis alone — it's a property of the combination.</strong> Snapshot indexes push complexity into the
+executor; live indexes absorb it.</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr>
+      <th>Combo</th>
+      <th class="center">T2 crossing</th>
+      <th class="center">T3 swap</th>
+      <th class="center">T4 converge</th>
+      <th class="center">T5 ghosts</th>
+      <th>Extra machinery required</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>M1 × S1</strong><br><span class="tiny">batch + sweep</span></td>
+      <td class="center"><span class="chip fail">✗ fails</span></td>
+      <td class="center"><span class="chip fail">✗ fails</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td>Tick-end sweep only (already exists)</td>
+    </tr>
+    <tr>
+      <td><strong>M2 × S1</strong><br><span class="tiny">waves + rebuilt CSR</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip mach">◆ swap check</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td>Step records + swap matching; rebuild per wave; event-ordering rule</td>
+    </tr>
+    <tr>
+      <td><strong>M3/M4 × S1</strong><br><span class="tiny">sequential over snapshot</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip mach">◆ overlay</span></td>
+      <td class="center"><span class="chip mach">◆ confirm</span></td>
+      <td>This-tick moves overlay ∪ stale candidates, each confirmed vs current cell_pos —
+          works, but detection is against <em>reconstructed</em> truth; the subtlest row here</td>
+    </tr>
+    <tr class="rec">
+      <td><strong>M3/M4 × S3</strong><br><span class="tiny">sequential over live grid</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td><strong>None</strong> — every topology reduces to “someone steps into a currently-occupied
+          cell”, checked against a live chain</td>
+    </tr>
+    <tr>
+      <td><strong>M3/M4 × S5</strong><br><span class="tiny">sequential over scan</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td>None — but O(steps × things) per batch; prototype only</td>
+    </tr>
+    <tr>
+      <td><strong>M5 × any</strong><br><span class="tiny">intention/commit</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td class="center"><span class="chip pass">✓ pass</span></td>
+      <td>Intent buffer + symbolic conflict rules + two-phase commit + retraction</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<p class="tiny">T1 and T7 omitted — every combo passes them. T6 omitted — identical bookkeeping in
+every combo (tick-start co-location snapshot, or the future follower-parenting mechanic).</p>
+
+<div class="callout">
+  <p><strong>Why the swap check disappears under sequential + live.</strong>
+  The “simultaneous exchange” doesn't exist sequentially: whoever steps first enters a cell the
+  other <em>still occupies</em>, and the live query sees them right there. Under waves the swap
+  exists precisely because both movers moved before anyone looked. The same logic dissolves the
+  crossing, the convergence (the second arriver finds the first, already linked), and the ghost
+  (the fleer is already unlinked). One mechanism, four test cases.</p>
+</div>
+
+<!-- ================================================================ -->
+<h2>Events — how encounters become consequences</h2>
+
+<div class="grid2">
+<div class="card">
+  <h3>Inline (M3/M4)</h3>
+  <p class="dim" style="font-size:0.9rem">Handler runs at the meeting instant: true meeting cell, true
+  world. It can halt both parties, redirect, or ignore; later movers this tick see the outcome.
+  Despawn during resolution is already safe — <code>mark_for_despawn</code> defers death to
+  <code>despawn_flush</code>. The natural home for ROTK-X-style “you bumped into someone on the road”.</p>
+</div>
+<div class="card">
+  <h3>Wave-boundary (M2)</h3>
+  <p class="dim" style="font-size:0.9rem">Events collected per wave, fired between waves against true
+  post-wave state. One wave of latency between meeting and consequence, plus an ordering rule when
+  one thing appears in two same-wave events (e.g. lower slot of the pair resolves first).</p>
+</div>
+<div class="card">
+  <h3>End-of-tick (M1)</h3>
+  <p class="dim" style="font-size:0.9rem">Events fire against final state; all meeting context must be
+  carried in the event record — and for crossings there is no context to carry, because the meeting
+  never had a cell.</p>
+</div>
+<div class="card">
+  <h3>Re-fire policy (all)</h3>
+  <p class="dim" style="font-size:0.9rem">Per-tick pair dedup lives in movement scratch. “We already
+  met yesterday” is either the tick-start co-location snapshot or — better long-term — the
+  interaction system's own memory.</p>
+</div>
+</div>
+
+<div class="callout">
+  <p><strong>Batched days must be interruptible.</strong> <code>tick</code> takes
+  <code>num_days</code>. An encounter whose interaction needs player input must be able to stop the
+  batch: process day-ticks in a loop, return early with “stopped at day k, interaction pending”.
+  Every executor supports this the same way (stop between day-ticks); inline resolution can even
+  stop <em>mid-day</em> — which is exactly the ROTK-X travel-event feel. Nothing on this page
+  forecloses it; worth deciding when the interaction system lands.</p>
+</div>
+
+<h3>Per-30-day-batch cost <span class="tiny">(500 movers, speed 2, 500×500 map)</span></h3>
+<div class="barchart" role="img" aria-label="Index rebuilds per 30-day batch: M2 60, M1 30, sequential live 0">
+  <div class="barrow"><span class="blabel">M2 × S1 (2 waves/day)</span><span class="bartrack axisline"><span class="bar" style="width:64%"></span><span class="barval">60 rebuilds ≈ 10–20 ms</span></span></div>
+  <div class="barrow"><span class="blabel">M1 × S1</span><span class="bartrack axisline"><span class="bar" style="width:32%"></span><span class="barval">30 rebuilds ≈ 5–10 ms</span></span></div>
+  <div class="barrow"><span class="blabel">M3/M4 × S3</span><span class="bartrack axisline"><span class="bar" style="width:0"></span><span class="barval">0 rebuilds <span class="tiny">(~30k O(1) link/unlink ops — negligible)</span></span></span></div>
+</div>
+<p class="tiny">All three are affordable — cost alone doesn't pick the winner; the matrix does.</p>
+
+<!-- ================================================================ -->
+<h2>Recommendations, ranked</h2>
+
+<div class="rec">
+  <div class="rank">R1 — recommended</div>
+  <h3>M4 × S3 — sequential 1-cell rounds over a live linked grid</h3>
+  <p>The bookkeeping-free column of the matrix. All seven topologies correct <em>by construction</em>,
+  inline resolution reads truth, chases and races stay fair, zero rebuilds, ~600KB.
+  If pursuit is judged a non-mechanic forever, M3 (full budget per mover) is the same design minus
+  the outer round loop — a 3-line difference, switchable at any time.</p>
+  <p class="price"><b>Price:</b> chain maintenance localized in the few blessed mutators
+  (spawn / despawn_flush / set_parent / the one cell_pos writer) + one validation-pass check.
+  <b>Open sub-decision:</b> the grid lives in World (embedded arrays, maintained by the existing
+  blessed World mutators) or in Game behind mandatory wrappers — World-resident is the lean, since
+  the structure must mutate in lockstep with World's own writes.</p>
+</div>
+
+<div class="rec second">
+  <div class="rank">R2 — the rebuild-purist alternative</div>
+  <h3>M2 × S1 — lockstep waves over the rebuilt CSR</h3>
+  <p>Choose this to keep the codebase's single derived-state pattern — everything rebuilt, nothing
+  incrementally maintained — with honest simultaneity. Pays the swap check, per-wave rebuilds, and
+  a wave-boundary event-ordering rule. Nothing about it is wrong; it is simply more moving parts in
+  the executor for the same observable behavior as R1.</p>
+</div>
+
+<div class="rec third">
+  <div class="rank">R3 — the legitimate first milestone</div>
+  <h3>M1 × S1 — batch + end-of-tick sweep</h3>
+  <p>The genuinely simplest thing that works <em>if in-transit road meetings are not a near-term
+  mechanic</em>: towns, arrivals, entering/leaving, and co-located stacks all work; only crossings
+  and swaps (T2/T3) are sacrificed. Because the pathfinding / cache / order / speed layers are
+  identical under every option, upgrading M1 → R1 or R2 later touches only the movement loop and
+  the index module.</p>
+</div>
+
+<div class="card">
+  <h3>Anti-recommendations</h3>
+  <ul class="dim" style="font-size:0.92rem">
+    <li><strong>M5</strong> — machinery out of proportion to a single-player sim whose interactions want to run inline.</li>
+    <li><strong>S4</strong> at this map cap — hashing and growth-invalidation for no win over a 500KB direct table.</li>
+    <li><strong>S2</strong> at this map cap — S1 dominates it.</li>
+    <li><strong>S5</strong> beyond the first prototype.</li>
+  </ul>
+</div>
+
+<!-- ================================================================ -->
+<h2>What swings with the decision — and what doesn't</h2>
+<p>Index-agnostic and executor-agnostic, already fully designed, buildable now:
+pathfinding + next-hop cache, move orders (thing destination, cancel-on-fail), speed and budget
+accumulators, auto-exit, arrival-as-encounter, validation logging.</p>
+<p>The decision swings exactly <strong>two artifacts</strong>: the movement loop inside
+<code>tick</code>, and the spatial structure plus its maintenance sites (one rebuild call vs a
+handful of blessed mutators). Both are small; neither leaks into the rest of the design.</p>
+
+<p class="tiny" style="margin-top:48px">imperium-cpp · docs/spatial-design.html · replaces the earlier
+markdown draft · palette: validated reference set (dataviz), light/dark via prefers-color-scheme.</p>
+
+</main>
+</body>
+</html>

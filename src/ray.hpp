@@ -182,6 +182,7 @@ V2 world_to_screen(Camera camera, V2 world);
 // Drawing. Pixel coordinates, origin top-left.
 void fill_rect(Rect rect, Color color, f32 corner_radius);
 void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius);
+void fill_circle(Rect bounds, Color color); // inscribed in bounds: centered, radius = min(w,h)/2
 
 void draw_text(String text, FontId font, V2 pos, i32 size, Color color); // truncated past 1023 bytes
 

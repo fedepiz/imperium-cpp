@@ -288,6 +288,12 @@ void stroke_rect(Rect rect, f32 thickness, Color color, f32 corner_radius) {
                                 corner_segments(corner_radius), thickness, to_raylib(color));
 }
 
+void fill_circle(Rect bounds, Color color) {
+    V2  center = {bounds.x + bounds.w / 2, bounds.y + bounds.h / 2};
+    f32 radius = (bounds.w < bounds.h ? bounds.w : bounds.h) / 2;
+    DrawCircleV(to_raylib(center), radius, to_raylib(color));
+}
+
 void draw_text(String text, FontId font_id, V2 pos, i32 size, Color color) {
     char   buffer[1024];
     ::Font font = font_for(font_id, size); // an atlas rasterized at exactly this size
