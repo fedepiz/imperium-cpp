@@ -74,7 +74,7 @@ struct Id {
     u16 slot;
     u16 generation;
 
-    operator b32() const;
+         operator b32() const;
     bool operator==(const Id&) const = default;
 };
 
@@ -168,6 +168,28 @@ fn usize cell_index(const WorldMap* map, CellPos pos) {
     return (usize)pos.x + (usize)map->width * (usize)pos.y;
 }
 
+// Interaction state
+struct Choice {
+    DynString<256> text;
+    b32            enabled;
+};
+
+struct Interaction {
+    // False = no interaction
+    b32                   active;
+    DynString<256>        title;
+    DynString<2048>       description;
+    DynArray<Choice, 256> choices;
+};
+
+fn void add_choice(Interaction* interaction, String text, b32 enabled) {
+    if (push(&interaction->choices, {})) {
+        Choice* choice  = &interaction->choices[interaction->choices.len - 1];
+        choice->text    = text;
+        choice->enabled = enabled;
+    }
+}
+
 // Authoritative game state. ZII: the all-zero world is valid and empty —
 // slot 0 is the permanently-zeroed dummy, the first spawn takes slot 1.
 struct World {
@@ -191,6 +213,8 @@ struct World {
     // Global information
     // Days (in logical count)
     u64 epoch;
+    // Current interaction
+    Interaction interaction;
 };
 
 // Appends the name's bytes to the name buffer and returns their {offset, len}
@@ -967,11 +991,11 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
             u64 pair = pack_pair(thing->id.slot, other->id.slot);
             if (hashtable::get(&day->together, pair) || hashtable::get(&day->fired, pair)) continue;
             *hashtable::put(&day->fired, pair) = true;
-            Event event = {};
-            event.kind  = EventKind::Meet;
-            event.a     = thing->id;
-            event.b     = other->id;
-            event.cell  = here;
+            Event event                        = {};
+            event.kind                         = EventKind::Meet;
+            event.a                            = thing->id;
+            event.b                            = other->id;
+            event.cell                         = here;
             if (!push(&game->events, event) && !day->logged_full) {
                 LOG("movement: event buffer full — records dropped");
                 day->logged_full = true;
@@ -1136,7 +1160,13 @@ struct TickCommands {
     usize num_days;
 };
 
+// Returns true if the game wants to be paused, with no other event happening. Ticks will use this
+// and disregard all kinds of command. The UI should act accordingly
+fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
+
 fn void tick(Game* game, TickCommands commands) {
+    if (forced_pause(game)) { return; }
+
     World* world = &game->world;
 
     // Process the commands...
@@ -1161,6 +1191,7 @@ fn void tick(Game* game, TickCommands commands) {
             ScratchArena scratch(&game->arena);
 
             auto intents = vec::make_vec<MoveIntent>(&game->arena, 64);
+
             for (usize slot = 1; slot <= world->high_water; slot++) {
                 Thing* thing = &world->things[slot];
                 if (!thing->id || !thing->move_dest) continue;
@@ -1174,6 +1205,15 @@ fn void tick(Game* game, TickCommands commands) {
             }
 
             for (Event& event : game->events) {
+                if (event.kind == EventKind::Meet) {
+                    world->interaction.active      = true;
+                    world->interaction.title       = "Test title";
+                    world->interaction.description = "This is a test event";
+
+                    add_choice(&world->interaction, "Choice A", true);
+                    add_choice(&world->interaction, "Choice B", true);
+                    add_choice(&world->interaction, "Choice C", false);
+                }
                 event_log(world, event);
             }
         }
@@ -1194,18 +1234,21 @@ fn ui::data::Data extract_ui_data(Arena* arena, const Game* game) {
         ui::data::bind_global(&data, "DATE", date);
     }
 
-    // {
-    //     ui::data::bind_global(&data, "INTERACTION", "yes");
-    //     ui::data::bind_global(&data, "INT_TITLE", "Title goes here");
-    //     ui::data::bind_global(&data, "INT_TEXT", "The description would go here");
-    //     ui::data::begin_list(&data, "choices");
-    //     ui::data::begin_row(&data);
-    //     ui::data::bind(&data, "INDEX", "1");
-    //     ui::data::bind(&data, "CHOICE", "Yes");
-    //     ui::data::begin_row(&data);
-    //     ui::data::bind(&data, "INDEX", "2");
-    //     ui::data::bind(&data, "CHOICE", "No");
-    // }
+    if (world->interaction.active) {
+        ui::data::bind_global(&data, "INTERACTION", "yes");
+        ui::data::bind_global(&data, "INT_TITLE", arena::clone_string(arena, world->interaction.title));
+        ui::data::bind_global(&data, "INT_TEXT", arena::clone_string(arena, world->interaction.description));
+        ui::data::begin_list(&data, "choices");
+        usize idx = 0;
+        for (auto& choice : world->interaction.choices) {
+            ui::data::begin_row(&data);
+            ui::data::bind(&data, "INDEX", string::from_int(arena, (i64)idx));
+            ui::data::bind(&data, "CHOICE", arena::clone_string(arena, choice.text));
+            ui::data::bind(&data, "ENABLED", choice.enabled ? "yes" : "no");
+            idx++;
+        }
+    }
+
     return data;
 }
 

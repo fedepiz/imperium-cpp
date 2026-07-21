@@ -151,6 +151,45 @@ fn b32 test_dynarray() {
     return true;
 }
 
+fn b32 test_dynstring() {
+    DynString<8> s = {};
+    CHECK(s.len == 0 && s.capacity() == 8);     // ZII: zero is the empty string
+    for (char c : s) { (void)c; CHECK(false); } // ...and iterates nothing
+    CHECK(s == String{});                       // ...and converts/compares as one
+    clear(&s);
+
+    CHECK(append(&s, "Roma"));
+    CHECK(s.len == 4 && s[0] == 'R' && s == "Roma"); // implicit String on both sides of ==
+    CHECK(push(&s, '!') && s.len == 5 && s[4] == '!');
+    CHECK(!append(&s, "imperium"));                // 8 don't fit in the 3 left...
+    CHECK(s.len == 5 && s == "Roma!");             // ...all-or-nothing: untouched
+    CHECK(append(&s, String{}) && s.len == 5);     // ZII: empty append fits anywhere
+    CHECK(append(&s, "abc") && s.len == 8 && s == "Roma!abc"); // exact fill
+    CHECK(!push(&s, 'x') && s.len == 8);           // full: push refused
+
+    DynString<8> copy = s; // POD: plain assignment copies, embedded storage stays independent
+    clear(&s);
+    CHECK(s.len == 0 && copy == "Roma!abc");
+    CHECK(append(&s, copy)); // append takes String: the conversion feeds one buffer to another
+    String view_s    = s;
+    String view_copy = copy;
+    CHECK(view_s == view_copy && view_s.data != view_copy.data); // each view follows its own buffer
+
+    s = "assign";                     // operator=: bytes copy in, len replaced
+    CHECK(s.len == 6 && s == "assign");
+    s = "0123456789";                 // over capacity: silent truncation — decided
+    CHECK(s.len == 8 && s == "01234567");
+    s = String{};                     // the empty string assigns as empty
+    CHECK(s.len == 0);
+    s          = "overlap!";
+    String mid = {4, s.data + 4};     // view into s's own buffer...
+    s          = mid;
+    CHECK(s == "lap!");               // ...aliased assign lands intact (memmove)
+    copy = view_copy;                 // a buffer refills from its own old view
+    CHECK(copy == "Roma!abc");
+    return true;
+}
+
 fn b32 test_list() {
     arena::Arena a = {};
     arena::reserve(&a, 4 * 1024 * 1024);
@@ -2123,6 +2162,7 @@ const Test TESTS[] = {
     {"arena", test_arena},
     {"vec", test_vec},
     {"dynarray", test_dynarray},
+    {"dynstring", test_dynstring},
     {"list", test_list},
     {"string", test_string},
     {"file_io", test_file_io},

@@ -282,9 +282,11 @@ template <typename T> T* allocate(Arena* arena, usize count = 1);
 
 - The string type is a view — pointer + length, not null-terminated. It is
   its own struct, distinct from `Slice<char>`: its bytes are `const` (never
-  written through a String), and it carries the two sanctioned implicit
-  conversions — from a null-terminated literal and from `Slice<char>`, so
-  builders assemble bytes in a mutable slice and the result travels as String:
+  written through a String), and it carries the three sanctioned implicit
+  conversions — from a null-terminated literal, from `Slice<char>`, and from
+  `DynString<N>` (the fixed-capacity inline string in core), so builders
+  assemble bytes in a mutable slice or inline buffer and the result travels
+  as String:
 
 ```cpp
 struct String {
@@ -295,9 +297,22 @@ struct String {
     String(usize len, const char* data) : len{len}, data{data} {}
     String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
     String(Slice<char> s) : len{s.len}, data{s.data} {}
+    template <const usize N> String(const DynString<N>& s);
 };
 // usage: String name = "Roma";
 ```
+
+- `DynString<N>` is the string counterpart of `DynArray<T, N>`: embedded
+  fixed-capacity bytes + length, ZII (all-zero = empty string), no growth —
+  `push`/`append` return b32 and leave the contents untouched on overflow.
+  Assignment from String (`title = "Roma";`) copies bytes in and truncates
+  to capacity silently — decided; use `append` where refusal must be
+  visible. The operator is not a copy/move special member, so the type
+  stays trivially copyable.
+  It is what lets string data live inline in POD state (World, serialized
+  structs). The String conversion views the buffer it converted from: don't
+  let such a String outlive its DynString — in particular, never convert
+  from a function's temporary return value into a String that gets stored.
 
 - ZII: the empty string is `{}` — null data, zero count. All string functions
   must accept it.
@@ -309,8 +324,9 @@ struct String {
 ## Containers
 
 In order of preference:
-1. Fixed-size embedded array + count (see fat structs) — raw `T arr[N]` or the
-   bounds-asserted `Array<T, N>` from core.
+1. Fixed-size embedded array + count (see fat structs) — raw `T arr[N]`, the
+   bounds-asserted `Array<T, N>`, or the fixed-capacity `DynArray<T, N>` /
+   `DynString<N>` from core when the count varies at runtime.
 2. Arena-allocated array when the count is only known at runtime but fixed
    after creation: `arena::allocate<Entity>(a, count)`.
 3. `Slice<T>` — the universal view type for passing ranges around.

@@ -47,6 +47,11 @@ fn String format(arena::Arena* arena, const char* fmt, ...) {
     return {(usize)len, data};
 }
 
+// Decimal integer as an arena string — format's most common case, named.
+// Arena-backed on purpose: callers routinely hand the result to code that
+// stores String views (ui::data), so a stack buffer here would dangle.
+fn String from_int(arena::Arena* arena, i64 value) { return format(arena, "%lld", (long long)value); }
+
 // Prefer String's operator== at new call sites; this stays until the old
 // ones migrate.
 fn bool equals(String a, String b) { return a == b; }

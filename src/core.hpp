@@ -109,11 +109,14 @@ template <typename T> struct Slice {
     const T* end() const { return this->data + this->len; }
 };
 
+template <const usize N> struct DynString;
+
 // String — an immutable view of bytes: pointer + length, not null-terminated.
 // Distinct from Slice<char>: its bytes can never be written through it (const
-// data), and it carries the two sanctioned implicit conversions — from a
-// null-terminated literal (String name = "Roma";) and from Slice<char>, so
-// builders assemble into a mutable slice and the result travels as String.
+// data), and it carries the three sanctioned implicit conversions — from a
+// null-terminated literal (String name = "Roma";), from Slice<char>, and from
+// DynString<N>, so builders assemble into a mutable slice or inline buffer
+// and the result travels as String.
 struct String {
     usize       len;
     const char* data;
@@ -122,6 +125,7 @@ struct String {
     String(usize len, const char* data) : len{len}, data{data} {}
     String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
     String(Slice<char> s) : len{s.len}, data{s.data} {}
+    template <const usize N> String(const DynString<N>& s);
 
     const char& operator[](usize idx) const {
         ASSERT(idx < this->len);
@@ -200,5 +204,57 @@ template <typename T, const usize N> fn b32 append(DynArray<T, N>* array, Slice<
 template <const usize N> fn b32 append(DynArray<char, N>* array, String items) {
     return append(array, Slice<char>{items.len, (char*)items.data});
 }
+
+// Fixed-capacity inline string — DynArray's shape on bytes, String's read
+// surface: bytes enter through push/append and leave through the implicit
+// String conversion. ZII: the all-zero DynString is the empty string. It
+// cannot grow: push and append report success with a b32 and leave the
+// contents untouched when the bytes don't fit.
+template <const usize N> struct DynString {
+    usize len;
+    char  data[N];
+
+    // Bytes copy IN — the mirror of the String conversion out. Truncates to
+    // capacity silently (decided); append is the variant that refuses
+    // instead. memmove, so assigning a view of this same buffer is safe.
+    // Not a copy/move special member: the type stays trivially copyable.
+    DynString& operator=(String s) {
+        this->len = min(s.len, N);
+        if (this->len) memmove(this->data, s.data, this->len);
+        return *this;
+    }
+
+    const char& operator[](usize idx) const {
+        ASSERT(idx < this->len);
+        return this->data[idx];
+    }
+
+    usize capacity() const { return N; }
+
+    const char* begin() const { return this->data; }
+    const char* end() const { return this->data + this->len; }
+};
+
+// The third sanctioned String conversion: a view of THIS buffer, valid until
+// the next push/append/clear. A copied DynString carries its own bytes —
+// convert from the copy you keep.
+template <const usize N> String::String(const DynString<N>& s) : len{s.len}, data{s.data} {}
+
+template <const usize N> fn b32 push(DynString<N>* s, char c) {
+    if (s->len == N) return false;
+    s->data[s->len] = c;
+    s->len += 1;
+    return true;
+}
+
+// All-or-nothing like push: when the bytes don't all fit, nothing is appended.
+template <const usize N> fn b32 append(DynString<N>* s, String text) {
+    if (text.len > N - s->len) return false;
+    if (text.len) memcpy(s->data + s->len, text.data, text.len);
+    s->len += text.len;
+    return true;
+}
+
+template <const usize N> fn void clear(DynString<N>* s) { s->len = 0; }
 
 #endif

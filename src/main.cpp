@@ -179,8 +179,9 @@ fn void time_update(TimeState* time, TimeCommand command) {
     }
 }
 
-fn usize time_tick(TimeState* state) {
-    auto delta = ray::frame_time();
+// delta is the wall time to convert into day-ticks; the caller owns where it
+// comes from — and zeroes it to hold time (ZII: a zero delta accrues nothing).
+fn usize time_tick(TimeState* state, f32 delta) {
     state->accum += delta * state->speed * !state->paused;
     usize ticks = (usize)(state->accum);
     state->accum -= ticks;
@@ -189,9 +190,12 @@ fn usize time_tick(TimeState* state) {
 
 // The data the script's $VARs bind against, rebuilt every frame from
 // whatever state the game has. Formatted strings land in the frame arena.
-fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time) {
-    ui::data::bind_global(data, "TIME_BUTTON", time->paused ? "Paused" : "Playing");
-    ui::data::bind_global(data, "TIME_ENABLED", "yes");
+// A forced pause reads as paused and locks every time control — the player
+// cannot unpause over the sim's hold.
+fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time, b32 forced_pause) {
+    b32 paused = time->paused || forced_pause;
+    ui::data::bind_global(data, "TIME_BUTTON", paused ? "Paused" : "Playing");
+    ui::data::bind_global(data, "TIME_ENABLED", forced_pause ? "no" : "yes");
     // $HAS_PLAYER and $INTERACTION stay unbound: those panels stay hidden.
 
     // Speed buttons, one list row per level: the current level is the one
@@ -200,7 +204,7 @@ fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState*
     for (i32 level = 1; level <= MAX_SPEED; ++level) {
         ui::data::begin_row(data);
         ui::data::bind(data, "LEVEL", string::format(frame, "%d", level));
-        ui::data::bind(data, "ENABLED", (time->paused || time->speed == level) ? "no" : "yes");
+        ui::data::bind(data, "ENABLED", (paused || time->speed == level) ? "no" : "yes");
     }
 }
 
@@ -309,8 +313,12 @@ int main() {
         auto commands = vec::make_vec<Command>(&frame_arena, 256);
         key_input(&commands);
 
+        // Last tick's verdict: an open interaction holds time for the whole
+        // frame — the UI shows the hold, and the delta below zeroes out.
+        b32 forced_pause = game::forced_pause(game);
+
         auto ui_data = game::extract_ui_data(&frame_arena, game);
-        fill_ui_data(&ui_data, &frame_arena, &time);
+        fill_ui_data(&ui_data, &frame_arena, &time, forced_pause);
 
         ui::Input input     = {};
         input.bounds        = {0, 0, (f32)config.screen_width, (f32)config.screen_height};
@@ -351,7 +359,7 @@ int main() {
         render_ui_commands(ui_frame.commands, font.id);
         ray::frame_end();
 
-        usize num_days = time_tick(&time);
+        usize num_days = time_tick(&time, ray::frame_time() * !forced_pause);
 
         game::TickCommands tick_commands = {
             .commands = vec::slice(game_commands),
