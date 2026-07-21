@@ -1,17 +1,18 @@
 entity = {
 	kind = person
 	name = "TestPerson"
-	pos = { 4 3 }
+	pos = { 3 2 }
+	move_to = "Town2"
 }
 
 entity = {
 	kind = town
 	name = "Town1"
-	pos = { 4 6 }
+	pos = { 3 5 }
 }
 
 entity = {
 	kind = town
 	name = "Town2"
-	pos = { 8 6 }
+	pos = { 9 5 }
 }

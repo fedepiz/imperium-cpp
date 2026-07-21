@@ -339,6 +339,11 @@ struct ParseU32Result { u32 value; b32 ok; };
   later. Assert liberally.
 - No error codes threaded through five layers; handle failure close to where it
   happens, or return zero and let ZII make the failure path safe to execute.
+- Guards earn their place. A liveness/null check exists only where it owns a
+  failure mode (LOG + recover), where the zero path would actually corrupt
+  state (e.g. a write through the dummy slot), or as an `ASSERT` stating a
+  contract. Everywhere else, trust ZII — the dummy path executes harmlessly;
+  don't re-check what a callee already makes safe.
 
 ## Templates and operator overloading
 

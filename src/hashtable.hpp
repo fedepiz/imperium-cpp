@@ -92,6 +92,14 @@ template <typename V> fn Hashtable<V> make_table(arena::Arena* arena, usize capa
     return result;
 }
 
+// True when inserting `additional` NEW keys from the current state would
+// trigger at least one reallocation. The one home of the load-factor rule:
+// put grows through here, and callers that must never grow (fixed-budget
+// caches that purge instead) ask here before a batch.
+template <typename V> fn b32 would_grow(const Hashtable<V>* table, usize additional) {
+    return (table->count + additional) * 4 > table->capacity * 3;
+}
+
 // Pointer to the value for key, or null when absent. Safe on the ZII table.
 template <typename V> fn V* get(Hashtable<V>* table, u64 key) {
     ASSERT(key != 0);
@@ -110,7 +118,7 @@ template <typename V> fn V* get(Hashtable<V>* table, u64 key) {
 template <typename V> fn V* put(Hashtable<V>* table, u64 key) {
     ASSERT(key != 0);
     // Grow at 3/4 load — before probing, so the probe below always terminates.
-    if ((table->count + 1) * 4 > table->capacity * 3) {
+    if (would_grow(table, 1)) {
         grow(table, table->capacity ? table->capacity * 2 : 8);
     }
     usize mask = table->capacity - 1;

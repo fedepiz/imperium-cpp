@@ -444,6 +444,502 @@ fn b32 test_game_hierarchy() {
     return true;
 }
 
+// ------------------------------------------------------------- game spatial
+// Helpers shared by the spatial/pathfinding/movement tests. Terrain index 2
+// is Road, the only passable kind. The Game arena is a separate vmem
+// reservation — every scenario releases it before its test arena.
+
+constexpr u8 TEST_ROAD = 2;
+
+// A game whose map is width x height of Water; callers paint roads, spawn
+// things, then game_ready.
+fn game::Game* make_test_game(arena::Arena* a, i32 width, i32 height) {
+    auto* g                   = arena::allocate<game::Game>(a);
+    g->world.world_map.width  = width;
+    g->world.world_map.height = height;
+    arena::reserve(&g->arena, game::GAME_ARENA_SIZE);
+    game::spatial_initialize(&g->spatial, &g->world.world_map, &g->arena);
+    return g;
+}
+
+fn void paint_road(game::World* w, i32 x0, i32 y0, i32 x1, i32 y1) {
+    for (i32 y = y0; y <= y1; y++) {
+        for (i32 x = x0; x <= x1; x++) { w->world_map[{x, y}].terrain_type_idx = TEST_ROAD; }
+    }
+}
+
+fn game::Thing* spawn_bodied(game::World* w, const char* kind, i32 x, i32 y) {
+    game::Thing* thing   = game::spawn(w);
+    thing->body_kind_idx = game::lookup_body_kind(kind);
+    thing->cell_pos      = {x, y};
+    return thing;
+}
+
+// Mutations stop: derived structures catch up (same contract as initialize).
+fn void game_ready(game::Game* g) {
+    game::spatial_rebuild(&g->spatial, &g->world);
+    game::hierarchy_refresh(g);
+}
+
+fn void tick_day(game::Game* g) {
+    game::TickCommands commands = {};
+    commands.num_days           = 1;
+    game::tick(g, commands);
+}
+
+fn usize count_occupants(game::Game* g, i32 x, i32 y) {
+    usize count = 0;
+    for (game::Thing* thing : game::occupants_of(&g->spatial, &g->world, {x, y})) {
+        (void)thing;
+        count++;
+    }
+    return count;
+}
+
+fn b32 cell_has(game::Game* g, i32 x, i32 y, game::Id id) {
+    for (game::Thing* thing : game::occupants_of(&g->spatial, &g->world, {x, y})) {
+        if (thing->id.slot == id.slot && thing->id.generation == id.generation) return true;
+    }
+    return false;
+}
+
+fn usize count_events(game::Game* g, game::EventKind kind) {
+    usize count = 0;
+    for (game::Event& event : g->events) { count += event.kind == kind ? 1 : 0; }
+    return count;
+}
+
+fn const game::Event* first_event(game::Game* g, game::EventKind kind) {
+    for (game::Event& event : g->events) {
+        if (event.kind == kind) return &event;
+    }
+    return 0;
+}
+
+fn b32 test_game_spatial() {
+    arena::Arena a = {};
+    arena::reserve(&a, 32 * 1024 * 1024);
+
+    // ZII: a game with no grid reads as empty and validates clean.
+    auto* zero = arena::allocate<game::Game>(&a);
+    CHECK(count_occupants(zero, 0, 0) == 0);
+    CHECK(game::validate(zero) == 0);
+
+    auto* g = make_test_game(&a, 8, 4);
+    auto* w = &g->world;
+    paint_road(w, 1, 1, 6, 1);
+
+    game::Thing* alice = spawn_bodied(w, "person", 1, 1);
+    game::Thing* bob   = spawn_bodied(w, "person", 2, 1);
+    game::Thing* town  = spawn_bodied(w, "town", 3, 1);
+    game_ready(g);
+    CHECK(game::validate(g) == 0);
+    CHECK(count_occupants(g, 1, 1) == 1 && cell_has(g, 1, 1, alice->id));
+    CHECK(g->spatial.cell_next[0] == 0); // the dummy is never chained
+
+    // The blessed move: unlink + write + relink, exact immediately.
+    game::move_thing(&g->spatial, &w->world_map, alice, {2, 1});
+    CHECK(count_occupants(g, 1, 1) == 0 && count_occupants(g, 2, 1) == 2);
+    CHECK(cell_has(g, 2, 1, alice->id) && cell_has(g, 2, 1, bob->id));
+    CHECK(game::validate(g) == 0);
+
+    // Rebuild equals incremental: raw writes then a rebuild converge.
+    alice->cell_pos = {4, 1}; // deliberately bypassing the mutators
+    game::spatial_rebuild(&g->spatial, w);
+    CHECK(count_occupants(g, 2, 1) == 1 && cell_has(g, 4, 1, alice->id));
+    CHECK(game::validate(g) == 0);
+
+    // Containment: enter unlinks; exit surfaces at the outermost anchor.
+    game::enter_container(&g->spatial, w, alice->id, town->id);
+    CHECK(!game::is_on_map(w, alice) && count_occupants(g, 4, 1) == 0);
+    CHECK(game::validate(g) == 0);
+    game::Thing* eve = spawn_bodied(w, "person", 5, 1);
+    game::spatial_rebuild(&g->spatial, w); // raw spawn: relink before using mutators
+    game::enter_container(&g->spatial, w, eve->id, alice->id); // eve in alice in town
+    CHECK(game::resolve_map_anchor(w, eve->id) == town);
+    CHECK(game::exit_to_map(&g->spatial, w, eve));
+    CHECK(game::is_on_map(w, eve) && eve->cell_pos.x == 3 && eve->cell_pos.y == 1);
+    CHECK(cell_has(g, 3, 1, eve->id));
+    CHECK(game::validate(g) == 0);
+
+    // Despawning a container spills its occupants onto its last cell.
+    game::mark_for_despawn(w, town->id);
+    game::despawn_flush(&g->spatial, w);
+    CHECK(game::get(w, town->id)->id.slot == 0);
+    CHECK(game::is_on_map(w, alice) && alice->cell_pos.x == 3 && alice->cell_pos.y == 1);
+    CHECK(cell_has(g, 3, 1, alice->id) && cell_has(g, 3, 1, eve->id) && !cell_has(g, 3, 1, town->id));
+    CHECK(game::validate(g) == 0);
+
+    // A bodiless occupant spills (parent cleared) but never links.
+    game::Thing* ghost = game::spawn(w); // no body
+    game::set_parent(w, ghost->id, game::Hierarchy::LocationOf, bob->id);
+    game::mark_for_despawn(w, bob->id);
+    game::despawn_flush(&g->spatial, w);
+    CHECK(ghost->parents[0].slot == 0 && !game::is_on_map(w, ghost));
+    CHECK(ghost->cell_pos.x == 2 && ghost->cell_pos.y == 1 && count_occupants(g, 2, 1) == 0);
+    CHECK(game::validate(g) == 0);
+
+    // Deliberate corruption trips the audit; a rebuild-clean world passes.
+    game::Thing* mallory = spawn_bodied(w, "person", 6, 1);
+    game::spatial_rebuild(&g->spatial, w);
+    CHECK(game::validate(g) == 0);
+    mallory->cell_pos = {6, 2}; // raw move onto Water: the chain now lies
+    CHECK(game::validate(g) > 0);
+    mallory->cell_pos = {6, 1};
+    CHECK(game::validate(g) == 0);
+
+    arena::release(&g->arena);
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_game_pathfinding() {
+    arena::Arena a = {};
+    arena::reserve(&a, 32 * 1024 * 1024);
+
+    // An L of road plus a disconnected island cell.
+    auto* g = make_test_game(&a, 10, 5);
+    auto* w = &g->world;
+    paint_road(w, 1, 1, 8, 1); // trunk
+    paint_road(w, 8, 1, 8, 3); // leg down
+    paint_road(w, 1, 3, 1, 3); // island
+
+    // Adjacent hop goes straight to the destination.
+    game::SpatialMap* spatial = &g->spatial;
+    game::WorldMap*   map     = &w->world_map;
+    game::NextHop     hop     = game::route_next_hop(spatial, map, {1, 1}, {2, 1});
+    CHECK(hop.found && hop.cell.x == 2 && hop.cell.y == 1);
+
+    // Walk the full L hop-by-hop: BFS is shortest, so steps == road distance.
+    game::CellPos at   = {1, 1};
+    game::CellPos dest = {8, 3};
+    usize         steps = 0;
+    while (!(at == dest) && steps < 32) {
+        game::NextHop next = game::route_next_hop(spatial, map, at, dest);
+        CHECK(next.found);
+        at = next.cell;
+        steps++;
+    }
+    CHECK(steps == 9);
+
+    // One search seeded next-hops for EVERY path cell toward that dest.
+    b32 seeded = true;
+    for (i32 x = 1; x <= 7; x++) {
+        u64 key = game::pack_route_key({x, 1}, dest);
+        seeded  = seeded && hashtable::get(&spatial->next_hop_cache, key) != 0;
+    }
+    CHECK(seeded);
+
+    // Unreachable island / unwalkable water: found == false, no trap.
+    game::NextHop island = game::route_next_hop(spatial, map, {1, 1}, {1, 3});
+    game::NextHop water  = game::route_next_hop(spatial, map, {1, 1}, {5, 4});
+    CHECK(!island.found && !water.found);
+
+    // Purge-on-full: junk-fill until one more whole-path batch would grow,
+    // then a fresh search purges instead — capacity never changes.
+    usize capacity = spatial->next_hop_cache.capacity;
+    u64   junk     = 0xF00D0000;
+    while (!hashtable::would_grow(&spatial->next_hop_cache, 9)) { *hashtable::put(&spatial->next_hop_cache, ++junk) = 0; }
+    CHECK(spatial->next_hop_cache.capacity == capacity);
+    game::NextHop back = game::route_next_hop(spatial, map, {8, 3}, {1, 1}); // 9-edge path, fresh dest
+    CHECK(back.found);
+    CHECK(spatial->next_hop_cache.capacity == capacity); // purged, never grew
+    CHECK(spatial->next_hop_cache.count == 9);           // only the fresh batch survives
+
+    arena::release(&g->arena);
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_game_movement_meetings() {
+    arena::Arena a = {};
+    arena::reserve(&a, 64 * 1024 * 1024);
+
+    // T1 standing meeting: a mover walks past a stander — one Meet, then quiet.
+    {
+        auto* g = make_test_game(&a, 10, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 8, 1);
+        game::Thing* mover   = spawn_bodied(w, "person", 1, 1);
+        game::Thing* stander = spawn_bodied(w, "person", 2, 1);
+        game::Thing* town    = spawn_bodied(w, "town", 8, 1);
+        game_ready(g);
+        game::order_move(w, mover->id, town->id);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Meet) == 1 && count_events(g, game::EventKind::Arrival) == 0);
+        const game::Event* meet = first_event(g, game::EventKind::Meet);
+        CHECK(meet->a.slot == mover->id.slot && meet->b.slot == stander->id.slot);
+        CHECK(meet->cell.x == 2 && meet->cell.y == 1);
+        tick_day(g);
+        CHECK(g->events.len == 0); // walked on: the pair does not re-fire
+        arena::release(&g->arena);
+    }
+
+    // T3 adjacent swap: sequential resolution makes the first stepper enter a
+    // still-occupied cell — exactly one Meet, then they part in silence.
+    {
+        auto* g = make_test_game(&a, 10, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 8, 1);
+        game::Thing* left   = spawn_bodied(w, "person", 3, 1);
+        game::Thing* right  = spawn_bodied(w, "person", 4, 1);
+        game::Thing* town_w = spawn_bodied(w, "town", 1, 1);
+        game::Thing* town_e = spawn_bodied(w, "town", 8, 1);
+        game_ready(g);
+        game::order_move(w, left->id, town_e->id);
+        game::order_move(w, right->id, town_w->id);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Meet) == 1);
+        const game::Event* meet = first_event(g, game::EventKind::Meet);
+        CHECK(meet->cell.x == 4 && meet->cell.y == 1);          // left stepped in first
+        CHECK(left->cell_pos.x == 4 && right->cell_pos.x == 3); // swapped
+        tick_day(g);
+        CHECK(g->events.len == 0); // moving apart
+        arena::release(&g->arena);
+    }
+
+    // T2 crossing (1-cell gap): both intend the middle cell; the second
+    // arrival meets the first. Next day they part as day-start companions.
+    {
+        auto* g = make_test_game(&a, 10, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 8, 1);
+        game::Thing* left   = spawn_bodied(w, "person", 3, 1);
+        game::Thing* right  = spawn_bodied(w, "person", 5, 1);
+        game::Thing* town_w = spawn_bodied(w, "town", 1, 1);
+        game::Thing* town_e = spawn_bodied(w, "town", 8, 1);
+        game_ready(g);
+        game::order_move(w, left->id, town_e->id);
+        game::order_move(w, right->id, town_w->id);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Meet) == 1);
+        const game::Event* meet = first_event(g, game::EventKind::Meet);
+        CHECK(meet->cell.x == 4 && left->cell_pos.x == 4 && right->cell_pos.x == 4);
+        tick_day(g);
+        CHECK(g->events.len == 0 && left->cell_pos.x == 5 && right->cell_pos.x == 3);
+        arena::release(&g->arena);
+    }
+
+    // T4 convergence: two movers arrive at the same EMPTY junction cell in
+    // one day — the live grid still fires exactly one Meet.
+    {
+        auto* g = make_test_game(&a, 5, 4);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 3, 1);
+        paint_road(w, 2, 2, 2, 2);
+        game::Thing* a_thing = spawn_bodied(w, "person", 1, 1);
+        game::Thing* b_thing = spawn_bodied(w, "person", 3, 1);
+        game::Thing* town    = spawn_bodied(w, "town", 2, 2);
+        game_ready(g);
+        game::order_move(w, a_thing->id, town->id);
+        game::order_move(w, b_thing->id, town->id);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Meet) == 1);
+        const game::Event* meet = first_event(g, game::EventKind::Meet);
+        CHECK(meet->cell.x == 2 && meet->cell.y == 1);
+        tick_day(g); // both enter the town cell as companions: no Meet(a, b)
+        CHECK(count_events(g, game::EventKind::Arrival) == 2);
+        arena::release(&g->arena);
+    }
+
+    // T5 equal-speed chase, fleer's slot first: the chaser always enters the
+    // cell the fleer just vacated — never a Meet, never a false arrival.
+    {
+        auto* g = make_test_game(&a, 10, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 8, 1);
+        game::Thing* fleer  = spawn_bodied(w, "person", 3, 1); // lower slot: steps first
+        game::Thing* chaser = spawn_bodied(w, "person", 2, 1);
+        game::Thing* town   = spawn_bodied(w, "town", 8, 1);
+        game_ready(g);
+        game::order_move(w, fleer->id, town->id);
+        game::order_move(w, chaser->id, fleer->id);
+        for (usize day = 0; day < 3; day++) {
+            tick_day(g);
+            CHECK(g->events.len == 0);
+            CHECK(chaser->cell_pos.x == fleer->cell_pos.x - 1); // gap stays one
+            CHECK((b32)chaser->move_dest); // the chase is still on
+        }
+        arena::release(&g->arena);
+    }
+
+    // T6 companions: a co-located pair marching together stays silent.
+    {
+        auto* g = make_test_game(&a, 10, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 8, 1);
+        game::Thing* first  = spawn_bodied(w, "person", 2, 1);
+        game::Thing* second = spawn_bodied(w, "person", 2, 1);
+        game::Thing* town   = spawn_bodied(w, "town", 8, 1);
+        game_ready(g);
+        game::order_move(w, first->id, town->id);
+        game::order_move(w, second->id, town->id);
+        tick_day(g);
+        tick_day(g);
+        CHECK(g->events.len == 0);
+        CHECK(first->cell_pos.x == 4 && second->cell_pos.x == 4);
+        arena::release(&g->arena);
+    }
+
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_game_movement_orders() {
+    arena::Arena a = {};
+    arena::reserve(&a, 64 * 1024 * 1024);
+
+    // T7 arrival: order resolution and the Meet with the destination are
+    // orthogonal records of the same step.
+    {
+        auto* g = make_test_game(&a, 8, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        game::Thing* person = spawn_bodied(w, "person", 2, 1);
+        game::Thing* town   = spawn_bodied(w, "town", 5, 1);
+        game_ready(g);
+        game::order_move(w, person->id, town->id);
+        tick_day(g);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Arrival) == 0 && (b32)person->move_dest);
+        tick_day(g); // steps onto the town cell
+        CHECK(count_events(g, game::EventKind::Arrival) == 1 && count_events(g, game::EventKind::Meet) == 1);
+        const game::Event* arrival = first_event(g, game::EventKind::Arrival);
+        const game::Event* meet    = first_event(g, game::EventKind::Meet);
+        CHECK(arrival->a.slot == person->id.slot && arrival->b.slot == town->id.slot);
+        CHECK(meet->b.slot == town->id.slot);
+        // One stream keeps emission order: the step's Meet precedes its Arrival.
+        CHECK(g->events.len == 2 && g->events[0].kind == game::EventKind::Meet);
+        CHECK(!person->move_dest && person->move_points == 0);
+        CHECK(cell_has(g, 5, 1, person->id));
+        tick_day(g); // no order: nothing moves, nothing fires
+        CHECK(g->events.len == 0 && person->cell_pos.x == 5);
+
+        // Zero-length arrival: ordered to a co-resident dest — no step, no
+        // Meet (already together), just the arrival.
+        game::order_move(w, person->id, town->id);
+        tick_day(g);
+        CHECK(count_events(g, game::EventKind::Arrival) == 1 && count_events(g, game::EventKind::Meet) == 0);
+        CHECK(!person->move_dest);
+        arena::release(&g->arena);
+    }
+
+    // Auto-exit: a contained mover surfaces at its container's cell as the
+    // day's movement — and does NOT "meet" the container it just left.
+    {
+        auto* g = make_test_game(&a, 8, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        game::Thing* person = spawn_bodied(w, "person", 5, 1);
+        game::Thing* home   = spawn_bodied(w, "town", 5, 1);
+        game::Thing* target = spawn_bodied(w, "town", 1, 1);
+        game_ready(g);
+        game::enter_container(&g->spatial, w, person->id, home->id);
+        game::order_move(w, person->id, target->id);
+        tick_day(g);
+        CHECK(game::is_on_map(w, person) && person->parents[0].slot == 0);
+        CHECK(person->cell_pos.x == 5 && cell_has(g, 5, 1, person->id));
+        CHECK(count_events(g, game::EventKind::Meet) == 0); // surfacing out of home is not a meeting
+        tick_day(g);
+        CHECK(person->cell_pos.x == 4);
+        arena::release(&g->arena);
+    }
+
+    // Cancellations and refusals.
+    {
+        auto* g = make_test_game(&a, 8, 5);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        paint_road(w, 1, 3, 1, 3); // island
+        game::Thing* person = spawn_bodied(w, "person", 2, 1);
+        game::Thing* town   = spawn_bodied(w, "town", 6, 1);
+        game::Thing* island = spawn_bodied(w, "town", 1, 3);
+        game_ready(g);
+        CHECK(game::validate(g) == 0);
+
+        // Dest despawns mid-journey: canceled on the next day's gather.
+        game::order_move(w, person->id, town->id);
+        tick_day(g);
+        CHECK(person->cell_pos.x == 3);
+        game::mark_for_despawn(w, town->id);
+        tick_day(g); // moves once more; the flush at tick end kills the town
+        tick_day(g); // gather sees the dead dest: cancel + LOG
+        CHECK(!person->move_dest && game::is_valid(person->id));
+        CHECK(game::validate(g) == 0);
+
+        // Unreachable dest: canceled on the first failed search.
+        game::order_move(w, person->id, island->id);
+        tick_day(g);
+        CHECK(!person->move_dest);
+
+        // Refusals: bodiless and immobile movers never take orders.
+        game::Thing* ghost = game::spawn(w);
+        game::order_move(w, ghost->id, island->id);
+        game::order_move(w, island->id, person->id);
+        CHECK(!ghost->move_dest && !island->move_dest);
+
+        // The budget accumulator caps at one banked step.
+        game::Thing* town2 = spawn_bodied(w, "town", 6, 1);
+        game::spatial_rebuild(&g->spatial, w);
+        person->move_points = 0.9f;
+        game::order_move(w, person->id, town2->id);
+        tick_day(g);
+        CHECK(person->move_points == 0); // capped at 1, spent by the step
+        arena::release(&g->arena);
+    }
+
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_game_setup() {
+    arena::Arena frame = {};
+    arena::reserve(&frame, 32 * 1024 * 1024);
+    auto* g = arena::allocate<game::Game>(&frame);
+    game::initialize(&frame, g);
+    auto* w = &g->world;
+
+    // Real data files: everything on road, references resolved, zero problems.
+    CHECK(w->world_map.width == 12 && w->world_map.height == 10);
+    CHECK(game::validate(g) == 0);
+    game::Id person = game::find_thing_by_name(w, "TestPerson");
+    game::Id town1  = game::find_thing_by_name(w, "Town1");
+    game::Id town2  = game::find_thing_by_name(w, "Town2");
+    CHECK((b32)person && (b32)town1 && (b32)town2);
+    CHECK(game::get(w, person)->move_dest.slot == town2.slot);
+
+    // The scripted journey: down the spur through Town1 on day 3, east along
+    // the trunk, arrival at Town2 on day 9.
+    b32   met_town1   = false;
+    usize arrival_day = 0;
+    for (usize day = 1; day <= 12 && !arrival_day; day++) {
+        tick_day(g);
+        for (game::Event& event : g->events) {
+            if (event.kind == game::EventKind::Meet && event.b.slot == town1.slot) { met_town1 = day == 3; }
+            if (event.kind == game::EventKind::Arrival) { arrival_day = day; }
+        }
+    }
+    CHECK(met_town1 && arrival_day == 9);
+    const game::Thing* p = game::get(w, person);
+    CHECK(p->cell_pos.x == 9 && p->cell_pos.y == 5 && !p->move_dest);
+    const game::Event* arrival = first_event(g, game::EventKind::Arrival);
+    CHECK(arrival && arrival->b.slot == town2.slot);
+    CHECK(game::validate(g) == 0);
+
+    // draw_map excludes contained things — the container is their visual.
+    math::Rect visible = {0, 0, 12 * game::CELL_SIZE, 10 * game::CELL_SIZE};
+    usize      before  = game::draw_map(&frame, g, visible).items.len;
+    game::enter_container(&g->spatial, w, person, town2);
+    game::hierarchy_refresh(g);
+    usize after = game::draw_map(&frame, g, visible).items.len;
+    CHECK(after == before - 1);
+    CHECK(game::validate(g) == 0);
+
+    arena::release(&g->arena);
+    arena::release(&frame);
+    return true;
+}
+
 fn b32 test_tabula_errors() {
     arena::Arena a = {};
     arena::reserve(&a, 1024 * 1024);
@@ -602,6 +1098,17 @@ fn b32 test_hashtable() {
     CHECK(t.count == 0 && hashtable::get(&t, 1) == 0);
     *hashtable::put(&t, 1) = 5; // reusable after clear
     CHECK(t.count == 1 && *hashtable::get(&t, 1) == 5);
+
+    // would_grow is the one home of the load-factor rule (grow at 3/4 load):
+    // capacity 8 holds 6 without growing; the 7th insert crosses.
+    hashtable::Hashtable<i32> small = hashtable::make_table<i32>(&a, 4); // rounds up to 8
+    CHECK(small.capacity == 8 && !hashtable::would_grow(&small, 6) && hashtable::would_grow(&small, 7));
+    for (u64 k = 1; k <= 6; ++k) *hashtable::put(&small, k) = 1;
+    CHECK(small.capacity == 8 && small.count == 6 && hashtable::would_grow(&small, 1));
+    *hashtable::put(&small, 7) = 1; // put grows through the same rule
+    CHECK(small.capacity == 16);
+    hashtable::clear(&small);
+    CHECK(!hashtable::would_grow(&small, 12) && hashtable::would_grow(&small, 13));
 
     arena::release(&a);
     return true;
@@ -1625,6 +2132,11 @@ const Test TESTS[] = {
     {"math", test_math},
     {"hashtable", test_hashtable},
     {"game_hierarchy", test_game_hierarchy},
+    {"game_spatial", test_game_spatial},
+    {"game_pathfinding", test_game_pathfinding},
+    {"game_movement_meetings", test_game_movement_meetings},
+    {"game_movement_orders", test_game_movement_orders},
+    {"game_setup", test_game_setup},
     {"ui_grow", test_ui_grow},
     {"ui_compress", test_ui_compress},
     {"ui_fit", test_ui_fit},

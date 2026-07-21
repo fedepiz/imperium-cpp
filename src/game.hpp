@@ -5,6 +5,7 @@
 #include "string.hpp"
 #include "arena.hpp"
 #include "file_io.hpp"
+#include "hashtable.hpp"
 #include "tabula.hpp"
 #include "ui/data.hpp"
 #include "vec.hpp"
@@ -13,8 +14,8 @@ namespace game {
 using namespace arena;
 
 // The map of the world. Use sensible defaults for memory allocation
-constexpr usize MAP_MAX_WIDTH  = 2000;
-constexpr usize MAP_MAX_HEIGHT = 2000;
+constexpr usize MAP_MAX_WIDTH  = 500;
+constexpr usize MAP_MAX_HEIGHT = 500;
 constexpr usize MAP_MAX_SIZE   = MAP_MAX_WIDTH * MAP_MAX_HEIGHT;
 
 // World-space pixels per cell edge; drawing and culling share it.
@@ -42,6 +43,8 @@ struct WorldCell {
 struct CellPos {
     i32 x;
     i32 y;
+
+    bool operator==(const CellPos&) const = default;
 };
 
 struct WorldMap {
@@ -72,6 +75,7 @@ struct Id {
     u16 generation;
 
     operator b32() const;
+    bool operator==(const Id&) const = default;
 };
 
 fn b32 is_valid(Id id) { return id.slot != 0 && id.generation % 2 == 1; }
@@ -95,14 +99,19 @@ struct BodyKind {
     f32 size;
     // Shape
     BodyShape style;
+    // Cells per day; 0 = immobile (order_move refuses). Max 1: a thing never
+    // moves more than one cell per day-tick, which is what lets movement
+    // split into a gather pass and a sequential resolve pass (validate LOGs
+    // anything above).
+    f32 speed;
 };
 
 // Double braces: the outer pair initializes the Array struct, the inner its
 // embedded data[] — single braces make element one claim the whole member.
 inline const Array<BodyKind, 3> BODY_KINDS = {{
     {},
-    {.name = "person", .size = 0.5f, .style = BodyShape::Circle},
-    {.name = "town", .size = 1.0f, .style = BodyShape::Rectangle},
+    {.name = "person", .size = 0.5f, .style = BodyShape::Circle, .speed = 1.0f},
+    {.name = "town", .size = 1.0f, .style = BodyShape::Rectangle, .speed = 0},
 }};
 
 fn u8 lookup_body_kind(String name) {
@@ -132,6 +141,15 @@ struct Thing {
     CellPos cell_pos;
     // Hierarchy parents
     Array<Id, HIERARCHY_COUNT> parents;
+    // Move order: the destination THING (zero = no order, ZII). The goal cell
+    // re-resolves through the dest's LocationOf chain each day — traveling to
+    // someone inside a town is traveling to the town. Canceled (LOG) when the
+    // dest despawns or no road reaches it.
+    Id move_dest;
+    // Fractional step budget, in cells. Gains BodyKind::speed per day, capped
+    // at 1 (max speed is one cell per day); a step costs 1; zeroed on
+    // arrival/cancel.
+    f32 move_points;
 };
 
 constexpr usize NUM_ENTITIES    = 32000;
@@ -141,6 +159,13 @@ constexpr usize NAME_BUFFER_LEN = 1024 * 1024;
 // "is this cell on the map?" test here instead of trapping.
 fn b32 in_bounds(const WorldMap* map, CellPos pos) {
     return pos.x >= 0 && pos.x < map->width && pos.y >= 0 && pos.y < map->height;
+}
+
+// Row-major flat index of a cell. Cell indices are usize/u32 territory — the
+// map cap is 250k cells, past u16 — only coordinates pack into u16.
+fn usize cell_index(const WorldMap* map, CellPos pos) {
+    ASSERT(in_bounds(map, pos));
+    return (usize)pos.x + (usize)map->width * (usize)pos.y;
 }
 
 // Authoritative game state. ZII: the all-zero world is valid and empty —
@@ -201,6 +226,30 @@ fn Thing* get(World* world, Id id) {
 
 fn const Thing* get(const World* world, Id id) { return get(const_cast<World*>(world), id); }
 
+// A thing's parent handle in one hierarchy — the raw handle, possibly stale.
+fn Id get_parent(const Thing* thing, Hierarchy hierarchy) { return thing->parents[(usize)hierarchy]; }
+
+// Resolving overloads: the dummy when the parent is nil, dead, or stale.
+fn Thing* get_parent(World* world, const Thing* thing, Hierarchy hierarchy) {
+    return get(world, get_parent(thing, hierarchy));
+}
+
+fn const Thing* get_parent(const World* world, const Thing* thing, Hierarchy hierarchy) {
+    return get(world, get_parent(thing, hierarchy));
+}
+
+// Linear name scan — names are few and this runs at setup/debug cadence.
+// Zero id when absent or the name is empty.
+fn Id find_thing_by_name(const World* world, String name) {
+    if (!name.len) return {};
+    for (usize slot = 1; slot <= world->high_water; slot++) {
+        const Thing* thing = &world->things[slot];
+        if (!thing->id) continue;
+        if (resolve_name(world, thing->name) == name) return thing->id;
+    }
+    return {};
+}
+
 fn Thing* spawn(World* world) {
     u16 slot = 0;
     if (world->free_slots.len) {
@@ -226,7 +275,7 @@ fn Thing* spawn(World* world) {
 // the frame no matter when during it things get marked.
 fn void mark_for_despawn(World* world, Id id) {
     Thing* thing = get(world, id);
-    if (thing->id.slot == 0 || thing->marked_for_despawn) { return; }
+    if (!thing->id || thing->marked_for_despawn) { return; }
 
     thing->marked_for_despawn = true;
     b32 pushed                = push(&world->despawn_list, thing->id.slot);
@@ -260,13 +309,28 @@ fn void despawn_flush(World* world) {
 // caller's problem until a real need appears.
 fn void set_parent(World* world, Id child, Hierarchy hierarchy, Id parent) {
     Thing* thing = get(world, child);
-    if (thing->id.slot == 0) { return; }
+    if (!thing->id) { return; }
 
-    usize h       = (usize)hierarchy;
-    Id    current = thing->parents[h];
-    if (current.slot == parent.slot && current.generation == parent.generation) { return; }
+    usize h = (usize)hierarchy;
+    if (get_parent(thing, hierarchy) == parent) { return; }
     thing->parents[h] = parent;
     world->parents_version[h] += 1;
+}
+
+// Walk a thing's chain in one hierarchy to its root — the outermost ancestor
+// whose own parent no longer resolves (nil, dead, and stale all read as "no
+// parent"). The thing itself when parentless; dummy for a dead id. Bounded
+// against parent cycles (set_parent does no cycle checks): overflow LOGs and
+// returns the dummy.
+fn Thing* find_root_parent(World* world, Id id, Hierarchy hierarchy) {
+    Thing* thing = get(world, id);
+    for (u32 hops = 0; hops < 64 && thing->id; hops++) {
+        Thing* parent = get_parent(world, thing, hierarchy);
+        if (!parent->id) return thing;
+        thing = parent;
+    }
+    if (thing->id) { LOG("hierarchy: parent cycle at slot %d", (int)thing->id.slot); }
+    return &world->things[0];
 }
 
 // row_start entries are prefix sums of edge counts; one parent per thing
@@ -283,14 +347,76 @@ struct HierarchyIndex {
     Array<u16, NUM_ENTITIES>     children;
 };
 
+enum class EventKind : u32 {
+    Nil,     // zero — ZII default
+    Meet,    // a stepped into b's cell
+    Arrival, // a completed its move order at b (its dest)
+};
+
+// Fat ZII payload, the Command pattern: kind selects the field roles —
+// a is always the mover whose step emitted the event; b is the other party
+// (Meet) or the ordered destination (Arrival). Meeting something and
+// finishing an order are independent facts: one step may emit both, and the
+// stream keeps them in emission order.
+struct Event {
+    EventKind kind;
+    Id        a;
+    Id        b;
+    CellPos   cell;
+};
+
+constexpr usize MAX_EVENTS      = 1024;
+constexpr usize GAME_ARENA_SIZE = 64 * MB; // vmem reserve; committed stays ~9MB at the map cap
+
+// The spatial subsystem: the live "who is where" grid plus the pathfinding
+// state that serves it. The grid is a derived-but-synced cache over
+// Thing::cell_pos, exact at every instant: every position/on-mapness
+// mutation goes through the blessed mutators (spatial_link/unlink,
+// move_thing, exit_to_map, enter_container, the Game-level despawn_flush).
+// No allocation in any op except spatial_initialize; validate() audits the
+// sync.
+struct SpatialMap {
+    // Per-cell chain head (slot id), world_map.width*height entries, 0 =
+    // empty (slot 0 is the dummy, never linked). Null until
+    // spatial_initialize — ZII: reads see an empty grid.
+    u16* cell_heads;
+    // Intrusive chain through co-located slots; 0 terminates. cell_next[0]
+    // stays 0 forever — it doubles as the end sentinel.
+    Array<u16, NUM_ENTITIES> cell_next;
+
+    // BFS scratch, width*height entries each. came_from[i] is predecessor
+    // cell index + 1; 0 = unvisited. Meaningless between searches.
+    u32* bfs_came_from;
+    u32* bfs_queue;
+
+    // pack_route_key(from, dest) -> packed next cell. Sized so a freshly
+    // purged table absorbs any whole-path insert batch without growing —
+    // growth from a whole-run arena would leak the old block (see
+    // route_next_hop's purge).
+    hashtable::Hashtable<u32> next_hop_cache;
+};
+
 // The sim root: the authoritative World plus derived, rebuildable structures.
 // ZII: the zero Game is consistent — never-built indexes (version 0) match a
 // World whose parents were never touched, and both read as "no children".
+// Game must never relocate: spatial.next_hop_cache stores &this->arena.
 struct Game {
     World                                  world;
     Array<HierarchyIndex, HIERARCHY_COUNT> hierarchies;
     // Fill-pass cursor scratch for hierarchy_refresh; meaningless between calls.
     Array<u16, NUM_ENTITIES + 1> cursor;
+
+    // Whole-run arena owned by the game: spatial grid, BFS scratch, path
+    // cache, plus tick-time ScratchArena watermarks. Reserved at startup by
+    // whoever owns the Game (initialize, tests) before spatial_initialize
+    // allocates from it.
+    Arena arena;
+
+    SpatialMap spatial;
+
+    // This day's movement events: cleared at day start, LOG-drained at day
+    // end, left in place so tests can inspect them between ticks.
+    DynArray<Event, MAX_EVENTS> events;
 };
 
 // Rebuild every stale hierarchy index: a counting sort over live things,
@@ -305,9 +431,9 @@ fn void hierarchy_refresh(Game* game) {
         memset(&index->row_start, 0, sizeof(index->row_start));
         for (usize slot = 1; slot <= world->high_water; slot++) {
             const Thing& thing = world->things[slot];
-            if (!is_valid(thing.id)) { continue; }
-            const Thing* parent = get(world, thing.parents[h]);
-            if (parent->id.slot == 0) { continue; }
+            if (!thing.id) { continue; }
+            const Thing* parent = get_parent(world, &thing, (Hierarchy)h);
+            if (!parent->id) { continue; }
             index->row_start[(usize)parent->id.slot + 1] += 1;
         }
         for (usize i = 1; i <= NUM_ENTITIES; i++) {
@@ -317,9 +443,9 @@ fn void hierarchy_refresh(Game* game) {
         game->cursor = index->row_start;
         for (usize slot = 1; slot <= world->high_water; slot++) {
             const Thing& thing = world->things[slot];
-            if (!is_valid(thing.id)) { continue; }
-            const Thing* parent = get(world, thing.parents[h]);
-            if (parent->id.slot == 0) { continue; }
+            if (!thing.id) { continue; }
+            const Thing* parent = get_parent(world, &thing, (Hierarchy)h);
+            if (!parent->id) { continue; }
             index->children[game->cursor[parent->id.slot]++] = (u16)slot;
         }
 
@@ -370,6 +496,611 @@ fn ChildrenView<Thing> children_of(Game* game, Hierarchy hierarchy, Id parent) {
 fn ChildrenView<const Thing> children_of(const Game* game, Hierarchy hierarchy, Id parent) {
     ChildrenView<Thing> view = children_of(const_cast<Game*>(game), hierarchy, parent);
     return {view.slots, view.len, view.things};
+}
+
+// --- Spatial grid ------------------------------------------------------------
+
+// On-map: has a body AND the LocationOf parent resolves to the dummy (nil and
+// stale handles both count as "no container"). Dead slots are the caller's
+// filter — the dummy itself reads as off-map via its zero body.
+fn b32 is_on_map(const World* world, const Thing* thing) {
+    if (thing->body_kind_idx == 0) return false;
+    return !get_parent(world, thing, Hierarchy::LocationOf)->id;
+}
+
+// The cell owner for a thing: the root of its LocationOf chain, IF that root
+// actually stands on the map (the thing itself when already on map). A chain
+// can root in something bodiless — there is no cell to inherit — and that
+// reads as "nowhere": the dummy.
+fn Thing* resolve_map_anchor(World* world, Id id) {
+    Thing* root = find_root_parent(world, id, Hierarchy::LocationOf);
+    return is_on_map(world, root) ? root : &world->things[0];
+}
+
+// Head-insert into the thing's cell chain. Caller guarantees: alive, on-map,
+// in-bounds, not already linked — a double link corrupts silently; validate()
+// is the audit that catches maintenance bugs.
+fn void spatial_link(SpatialMap* spatial, const WorldMap* map, Thing* thing) {
+    ASSERT(spatial->cell_heads);
+    u16 slot = thing->id.slot;
+    ASSERT(slot != 0);
+    usize cell                = cell_index(map, thing->cell_pos);
+    spatial->cell_next[slot]  = spatial->cell_heads[cell];
+    spatial->cell_heads[cell] = slot;
+}
+
+// Walk-to-unlink — chains are short (co-located things), so no prev[] until
+// profiling says otherwise. ASSERTs the thing is in its cell's chain: an
+// absent entry means a maintenance bug, not a recoverable state.
+fn void spatial_unlink(SpatialMap* spatial, const WorldMap* map, Thing* thing) {
+    ASSERT(spatial->cell_heads);
+    u16 slot = thing->id.slot;
+    ASSERT(slot != 0);
+    usize cell = cell_index(map, thing->cell_pos);
+    if (spatial->cell_heads[cell] == slot) {
+        spatial->cell_heads[cell] = spatial->cell_next[slot];
+    } else {
+        u16 at = spatial->cell_heads[cell];
+        while (at && spatial->cell_next[at] != slot) {
+            at = spatial->cell_next[at];
+        }
+        ASSERT(at);
+        spatial->cell_next[at] = spatial->cell_next[slot];
+    }
+    spatial->cell_next[slot] = 0;
+}
+
+// Full recompute: clear, then spatial_link every live on-map thing — the
+// incremental op IS the rebuild body, so both paths share one codepath.
+// Out-of-bounds cell_pos is a data error: LOG and leave unlinked (validate
+// reports it too). End of initialize only; ticks maintain incrementally.
+fn void spatial_rebuild(SpatialMap* spatial, World* world) {
+    if (!spatial->cell_heads) return; // ZII: no grid to build
+    const WorldMap* map = &world->world_map;
+    memset(spatial->cell_heads, 0, (usize)map->width * (usize)map->height * sizeof(u16));
+    memset(&spatial->cell_next, 0, sizeof(spatial->cell_next));
+    for (usize slot = 1; slot <= world->high_water; slot++) {
+        Thing* thing = &world->things[slot];
+        if (!thing->id || !is_on_map(world, thing)) continue;
+        if (!in_bounds(map, thing->cell_pos)) {
+            LOG("spatial: slot %d off the map at %d,%d — not linked", (int)slot, thing->cell_pos.x, thing->cell_pos.y);
+            continue;
+        }
+        spatial_link(spatial, map, thing);
+    }
+}
+
+// View over one cell's occupants; range-for yields ThingT* resolved against
+// the world's things array on the fly (same shim shape as ChildrenView).
+// Valid only while the chains aren't mutated — don't step movers mid-iteration.
+template <typename ThingT> struct CellView {
+    const u16* next;   // base of SpatialMap::cell_next
+    ThingT*    things; // base of World::things
+    u16        head;
+
+    struct Iter {
+        const u16* next;
+        ThingT*    things;
+        u16        at;
+
+        ThingT* operator*() const { return &things[at]; }
+        Iter&   operator++() {
+            at = next[at];
+            return *this;
+        }
+        bool operator!=(Iter other) const { return at != other.at; }
+    };
+
+    Iter begin() const { return {next, things, head}; }
+    Iter end() const { return {next, things, 0}; }
+};
+
+fn CellView<Thing> occupants_of(SpatialMap* spatial, World* world, CellPos cell) {
+    u16 head = 0;
+    if (spatial->cell_heads && in_bounds(&world->world_map, cell)) {
+        head = spatial->cell_heads[cell_index(&world->world_map, cell)];
+    }
+    return {spatial->cell_next.data, world->things.data, head};
+}
+
+fn CellView<const Thing> occupants_of(const SpatialMap* spatial, const World* world, CellPos cell) {
+    CellView<Thing> view = occupants_of(const_cast<SpatialMap*>(spatial), const_cast<World*>(world), cell);
+    return {view.next, view.things, view.head};
+}
+
+// THE blessed cell_pos write for a linked (on-map) thing.
+fn void move_thing(SpatialMap* spatial, const WorldMap* map, Thing* thing, CellPos cell) {
+    spatial_unlink(spatial, map, thing);
+    thing->cell_pos = cell;
+    spatial_link(spatial, map, thing);
+}
+
+// Surface a contained thing on the map at its outermost on-map ancestor's
+// cell: write cell_pos, clear the LocationOf parent (through set_parent, so
+// the hierarchy version bumps), link if bodied. False + LOG when the chain
+// never reaches the map. No-op (true) when already on map.
+fn b32 exit_to_map(SpatialMap* spatial, World* world, Thing* thing) {
+    if (is_on_map(world, thing)) return true;
+    Thing* anchor = resolve_map_anchor(world, thing->id);
+    if (!anchor->id) {
+        LOG("spatial: slot %d has no map anchor to exit to", (int)thing->id.slot);
+        return false;
+    }
+    thing->cell_pos = anchor->cell_pos;
+    set_parent(world, thing->id, Hierarchy::LocationOf, {});
+    if (thing->body_kind_idx != 0) { spatial_link(spatial, &world->world_map, thing); }
+    return true;
+}
+
+// Blessed containment: unlink from the map when on it, then set_parent.
+// The container must resolve — leaving the map without a container is
+// exit_to_map's job, not a nil-parent write through this path.
+fn void enter_container(SpatialMap* spatial, World* world, Id child, Id container) {
+    // A dead child rides ZII: is_on_map is false and set_parent no-ops.
+    Thing* thing = get(world, child);
+    ASSERT(get(world, container)->id);
+    if (is_on_map(world, thing)) { spatial_unlink(spatial, &world->world_map, thing); }
+    set_parent(world, child, Hierarchy::LocationOf, container);
+}
+
+// Grid-aware flush, the overload to call once a world has a spatial map.
+// Order matters:
+//   1. unlink the dying while their fields are still readable,
+//   2. spill: survivors whose LocationOf parent is dying surface at the
+//      container's last (frozen) cell — linear scan, because children_of may
+//      be stale mid-tick and would trap on its freshness ASSERT,
+//   3. the World-level flush recycles the slots.
+// Marked containers inside marked containers die unspilled; live containers
+// inside dying ones surface with their own occupants intact.
+fn void despawn_flush(SpatialMap* spatial, World* world) {
+    const WorldMap* map = &world->world_map;
+    for (u16 slot : world->despawn_list) {
+        Thing* thing = &world->things[slot];
+        if (is_on_map(world, thing) && spatial->cell_heads && in_bounds(map, thing->cell_pos)) {
+            spatial_unlink(spatial, map, thing);
+        }
+    }
+    if (world->despawn_list.len) {
+        for (usize slot = 1; slot <= world->high_water; slot++) {
+            Thing* thing = &world->things[slot];
+            if (!thing->id || thing->marked_for_despawn) continue;
+            Thing* parent = get_parent(world, thing, Hierarchy::LocationOf);
+            if (!parent->id || !parent->marked_for_despawn) continue;
+            thing->cell_pos = parent->cell_pos;
+            set_parent(world, thing->id, Hierarchy::LocationOf, {});
+            if (thing->body_kind_idx != 0 && spatial->cell_heads && in_bounds(map, thing->cell_pos)) {
+                spatial_link(spatial, map, thing);
+            }
+        }
+    }
+    despawn_flush(world);
+}
+
+// Allocate everything sized to the map's ACTUAL area — grid heads, BFS
+// scratch, next-hop cache — from the given arena (already reserved by the
+// caller; the spatial map allocates but never reserves). The only allocating
+// spatial function. A zero-area map leaves the grid null (ZII); allocation
+// failure LOGs and leaves it null too.
+fn void spatial_initialize(SpatialMap* spatial, const WorldMap* map, Arena* arena) {
+    usize area = (usize)map->width * (usize)map->height;
+    if (!area) {
+        LOG("spatial: empty map — grid stays null");
+        return;
+    }
+    spatial->cell_heads    = (u16*)arena::allocate_raw(arena, area * sizeof(u16), alignof(u16));
+    spatial->bfs_came_from = (u32*)arena::allocate_raw(arena, area * sizeof(u32), alignof(u32));
+    spatial->bfs_queue     = (u32*)arena::allocate_raw(arena, area * sizeof(u32), alignof(u32));
+    // Capacity such that a freshly purged table absorbs any whole-path batch
+    // (max path < area cells) below the grow threshold — the cache provably
+    // never grows, so nothing leaks into the whole-run arena.
+    spatial->next_hop_cache = hashtable::make_table<u32>(arena, (area * 4) / 3 + 8);
+    if (!spatial->cell_heads || !spatial->bfs_came_from || !spatial->bfs_queue) {
+        LOG("spatial: arena exhausted — grid stays null");
+        spatial->cell_heads = 0;
+    }
+}
+
+// --- Pathfinding -------------------------------------------------------------
+
+fn u32 pack_cell(CellPos pos) { return ((u32)(u16)pos.x << 16) | (u32)(u16)pos.y; }
+
+fn CellPos unpack_cell(u32 packed) { return {(i32)(packed >> 16), (i32)(packed & 0xFFFF)}; }
+
+fn CellPos cell_from_index(const WorldMap* map, u32 index) {
+    return {(i32)(index % (u32)map->width), (i32)(index / (u32)map->width)};
+}
+
+// 4 x u16 coordinates in a u64. Zero would need from == dest == origin, and
+// from == dest is never queried (being there already means arrived).
+fn u64 pack_route_key(CellPos from, CellPos dest) {
+    u64 key = ((u64)pack_cell(from) << 32) | (u64)pack_cell(dest);
+    ASSERT(key != 0);
+    return key;
+}
+
+struct NextHop {
+    CellPos cell;
+    b32     found;
+};
+
+// Next cell on a shortest passable path from -> dest. Cache-first; a miss
+// runs BFS (4-way, uniform cost, passable cells only, early exit at dest) and
+// installs next-hops for EVERY path cell toward dest, so one search feeds the
+// whole journey and every follower on the same road. Unreachable, unwalkable
+// endpoints, or a missing grid return found == false — the caller cancels.
+fn NextHop route_next_hop(SpatialMap* spatial, const WorldMap* map, CellPos from, CellPos dest) {
+    ASSERT(!(from == dest));
+    if (!spatial->bfs_came_from || !in_bounds(map, from) || !in_bounds(map, dest)) return {};
+
+    u64 key = pack_route_key(from, dest);
+    if (u32* cached = hashtable::get(&spatial->next_hop_cache, key)) { return {unpack_cell(*cached), true}; }
+
+    if (!TERRAIN_TYPES[(*map)[from].terrain_type_idx].passable) return {};
+    if (!TERRAIN_TYPES[(*map)[dest].terrain_type_idx].passable) return {};
+
+    usize area = (usize)map->width * (usize)map->height;
+    memset(spatial->bfs_came_from, 0, area * sizeof(u32));
+    u32   from_idx                   = (u32)cell_index(map, from);
+    u32   dest_idx                   = (u32)cell_index(map, dest);
+    usize head                       = 0;
+    usize tail                       = 0;
+    spatial->bfs_queue[tail++]       = from_idx;
+    spatial->bfs_came_from[from_idx] = from_idx + 1; // self-pred marks visited
+    b32 reached                      = false;
+    while (head < tail && !reached) {
+        u32     cur      = spatial->bfs_queue[head++];
+        CellPos cur_pos  = cell_from_index(map, cur);
+        CellPos steps[4] = {
+            {cur_pos.x + 1, cur_pos.y},
+            {cur_pos.x - 1, cur_pos.y},
+            {cur_pos.x, cur_pos.y + 1},
+            {cur_pos.x, cur_pos.y - 1},
+        };
+        for (CellPos step : steps) {
+            if (!in_bounds(map, step)) continue;
+            u32 step_idx = (u32)cell_index(map, step);
+            if (spatial->bfs_came_from[step_idx]) continue;
+            if (!TERRAIN_TYPES[(*map)[step].terrain_type_idx].passable) continue;
+            spatial->bfs_came_from[step_idx] = cur + 1;
+            if (step_idx == dest_idx) {
+                reached = true;
+                break;
+            }
+            spatial->bfs_queue[tail++] = step_idx;
+        }
+    }
+    if (!reached) return {};
+
+    // Install (cell, dest) -> next for the whole path. Purge-before-batch:
+    // the capacity chosen at spatial_initialize guarantees a purged table
+    // fits any path, so the cache never grows (tripwired below).
+    usize path_edges = 0;
+    for (u32 at = dest_idx; at != from_idx; at = spatial->bfs_came_from[at] - 1) {
+        path_edges++;
+    }
+    if (hashtable::would_grow(&spatial->next_hop_cache, path_edges)) { hashtable::clear(&spatial->next_hop_cache); }
+    usize capacity_before = spatial->next_hop_cache.capacity;
+    u32   toward          = dest_idx;
+    for (u32 at = spatial->bfs_came_from[dest_idx] - 1;; at = spatial->bfs_came_from[at] - 1) {
+        CellPos at_pos = cell_from_index(map, at);
+        *hashtable::put(&spatial->next_hop_cache, pack_route_key(at_pos, dest)) =
+            pack_cell(cell_from_index(map, toward));
+        if (at == from_idx) break;
+        toward = at;
+    }
+    ASSERT(spatial->next_hop_cache.capacity == capacity_before);
+    (void)capacity_before;
+
+    u32* hop = hashtable::get(&spatial->next_hop_cache, key);
+    ASSERT(hop);
+    return {unpack_cell(*hop), true};
+}
+
+// --- Orders and movement -----------------------------------------------------
+
+// Unordered pair of live slots; slots >= 1, so the key is never 0.
+fn u64 pack_pair(u16 a, u16 b) {
+    ASSERT(a != 0 && b != 0 && a != b);
+    return ((u64)min(a, b) << 16) | (u64)max(a, b);
+}
+
+// Issue a move order. LOG + refuse movers that can never walk (dead, dummy,
+// bodiless, immobile body). The dest's liveness is only enforced at tick time
+// — it can despawn later anyway. dest = {} clears the order.
+fn void order_move(World* world, Id mover, Id dest) {
+    Thing* thing = get(world, mover);
+    if (!thing->id) {
+        LOG("order_move: dead or nil mover");
+        return;
+    }
+    if (!dest) {
+        thing->move_dest   = {};
+        thing->move_points = 0;
+        return;
+    }
+    String name = resolve_name(world, thing->name);
+    if (thing->body_kind_idx == 0 || BODY_KINDS[thing->body_kind_idx].speed <= 0) {
+        LOG("order_move: '%.*s' cannot move (bodiless or immobile)", (int)name.len, name.data);
+        return;
+    }
+    thing->move_dest = dest;
+}
+
+// One intended step, produced by movement_intent, executed by movement_step.
+// Whether the step ARRIVES is deliberately not computed here: the destination
+// may itself move while the day's steps execute, so arrival compares against
+// the dest's cell at step time — an intent-time flag would end a chase at the
+// cell the target already left.
+struct MoveIntent {
+    u16     slot;
+    CellPos to;      // the cell this mover steps onto (or surfaces onto, for exits)
+    b32     is_exit; // the step is exit_to_map instead of move_thing
+};
+
+// The per-mover half of a movement day: validate the order, accrue points,
+// pick the next hop toward the goal. Mutates only the thing's own order
+// fields — this is what makes the intent loop parallelizable someday. (One
+// caveat for a future parallel version: route_next_hop writes the shared
+// next-hop cache.) Speeds are capped at one cell per day, so one intent
+// covers the mover's whole day; {} means no step today (ZII — live slots
+// are >= 1).
+fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
+    if (!get(world, thing->move_dest)->id) {
+        String name = resolve_name(world, thing->name);
+        LOG("move: destination of '%.*s' is gone — order canceled", (int)name.len, name.data);
+        thing->move_dest   = {};
+        thing->move_points = 0;
+        return {};
+    }
+    Thing* goal_anchor = resolve_map_anchor(world, thing->move_dest);
+    if (!goal_anchor->id) {
+        String name = resolve_name(world, thing->name);
+        LOG("move: destination of '%.*s' is nowhere on the map — order canceled", (int)name.len, name.data);
+        thing->move_dest   = {};
+        thing->move_points = 0;
+        return {};
+    }
+    CellPos goal = goal_anchor->cell_pos;
+
+    // Exiting the container is the day's movement, ungated by points.
+    if (!is_on_map(world, thing)) {
+        Thing* anchor = resolve_map_anchor(world, thing->id);
+        if (!anchor->id) {
+            String name = resolve_name(world, thing->name);
+            LOG("move: '%.*s' is nowhere on the map and cannot exit — order canceled", (int)name.len, name.data);
+            thing->move_dest   = {};
+            thing->move_points = 0;
+            return {};
+        }
+        return {thing->id.slot, anchor->cell_pos, true};
+    }
+
+    thing->move_points = min(thing->move_points + BODY_KINDS[thing->body_kind_idx].speed, 1.0f);
+    if (thing->move_points < 1.0f) return {};
+
+    if (thing->cell_pos == goal) {
+        return {thing->id.slot, thing->cell_pos, false}; // zero-length arrival
+    }
+    NextHop hop = route_next_hop(spatial, &world->world_map, thing->cell_pos, goal);
+    if (!hop.found) {
+        String name = resolve_name(world, thing->name);
+        LOG("move: no road takes '%.*s' from %d,%d to %d,%d — order canceled", (int)name.len, name.data,
+            thing->cell_pos.x, thing->cell_pos.y, goal.x, goal.y);
+        thing->move_dest   = {};
+        thing->move_points = 0;
+        return {};
+    }
+    return {thing->id.slot, hop.cell, false};
+}
+
+// Day-scoped state for the step loop. Firing rules: at most once per pair per
+// day (fired), and pairs already sharing a cell at day start don't re-fire
+// while together (companions).
+struct MoveDay {
+    hashtable::Hashtable<b32> together;
+    hashtable::Hashtable<b32> fired;
+    b32                       logged_full;
+};
+
+// Opens a movement day: clears the event buffer and snapshots day-start
+// co-location, so it must run after the intent loop and before the first
+// movement_step. Walking each slot's successors visits every unordered pair
+// exactly once (unlinked slots chain to 0 for free).
+fn MoveDay movement_day_begin(Game* game, Arena* scratch) {
+    World*      world   = &game->world;
+    SpatialMap* spatial = &game->spatial;
+    clear(&game->events);
+
+    MoveDay day  = {};
+    day.together = hashtable::make_table<b32>(scratch, 64);
+    day.fired    = hashtable::make_table<b32>(scratch, 64);
+    for (usize slot = 1; slot <= world->high_water; slot++) {
+        if (!world->things[slot].id) continue;
+        for (u16 at = spatial->cell_next[slot]; at; at = spatial->cell_next[at]) {
+            *hashtable::put(&day.together, pack_pair((u16)slot, at)) = true;
+        }
+    }
+    return day;
+}
+
+// The sequential half: execute one intent against the live grid, so every
+// encounter check reads true current positions. Step order is slot order —
+// the deterministic tiebreak for genuine races. (An equal-speed chase never
+// fires when the fleer's slot precedes the chaser's; chaser-first firing a
+// Meet is correct sequential semantics — it genuinely entered a still-
+// occupied cell.)
+fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
+    auto* world   = &game->world;
+    auto* spatial = &game->spatial;
+    auto* thing   = &world->things[intent.slot];
+    // Intent and step happen the same tick, but the re-check is cheap and
+    // keeps the step safe against anything that cancels orders in between.
+    if (!thing->id || !thing->move_dest) return;
+
+    b32 stepped     = false;
+    Id  exited_from = {};
+    if (intent.is_exit) {
+        // The on-map thing whose cell we surface at — the one occupant an
+        // exit must NOT read as a meeting (nested containment makes this
+        // the outermost container, not the direct parent).
+        exited_from = resolve_map_anchor(world, thing->id)->id;
+        if (!exit_to_map(spatial, world, thing)) {
+            thing->move_dest   = {};
+            thing->move_points = 0;
+            return;
+        }
+        stepped = true;
+    } else if (!(intent.to == thing->cell_pos)) {
+        move_thing(spatial, &world->world_map, thing, intent.to);
+        thing->move_points -= 1.0f;
+        stepped = true;
+    }
+
+    // A step into (or onto) a cell meets everyone standing there now — except
+    // the container just left: surfacing out of a town is not a meeting with
+    // it.
+    if (stepped) {
+        auto here = thing->cell_pos;
+        for (auto* other : occupants_of(spatial, world, here)) {
+            if (other->id.slot == thing->id.slot) continue;
+            if (exited_from && other->id.slot == exited_from.slot) continue;
+            u64 pair = pack_pair(thing->id.slot, other->id.slot);
+            if (hashtable::get(&day->together, pair) || hashtable::get(&day->fired, pair)) continue;
+            *hashtable::put(&day->fired, pair) = true;
+            Event event = {};
+            event.kind  = EventKind::Meet;
+            event.a     = thing->id;
+            event.b     = other->id;
+            event.cell  = here;
+            if (!push(&game->events, event) && !day->logged_full) {
+                LOG("movement: event buffer full — records dropped");
+                day->logged_full = true;
+            }
+        }
+    }
+
+    // Arrival is orthogonal to any meeting the same step produced: it
+    // resolves the ORDER, not the pair. The goal re-resolves HERE, against
+    // the dest's current cell — a chaser that steps onto the cell its
+    // target just left has not arrived.
+    auto* goal_anchor = resolve_map_anchor(world, thing->move_dest);
+    if (goal_anchor->id && thing->cell_pos == goal_anchor->cell_pos) {
+        Event event = {};
+        event.kind  = EventKind::Arrival;
+        event.a     = thing->id;
+        event.b     = thing->move_dest;
+        event.cell  = thing->cell_pos;
+        if (!push(&game->events, event) && !day->logged_full) {
+            LOG("movement: event buffer full — records dropped");
+            day->logged_full = true;
+        }
+        thing->move_dest   = {};
+        thing->move_points = 0;
+    }
+}
+
+// Placeholder consumption until the interaction system exists: the log is
+// the observer. Records stay in place for tests to inspect.
+fn void event_log(World* world, Event event) {
+    String a = resolve_name(world, get(world, event.a)->name);
+    String b = resolve_name(world, get(world, event.b)->name);
+    switch (event.kind) {
+        case EventKind::Nil: break;
+        case EventKind::Meet:
+            LOG("encounter: '%.*s' met '%.*s' at %d,%d", (int)a.len, a.data, (int)b.len, b.data, event.cell.x,
+                event.cell.y);
+            break;
+        case EventKind::Arrival:
+            LOG("arrival: '%.*s' reached '%.*s' at %d,%d", (int)a.len, a.data, (int)b.len, b.data, event.cell.x,
+                event.cell.y);
+            break;
+    }
+}
+
+// --- Validation ---------------------------------------------------------------
+
+// LOG-based world sanity pass — data errors are expected failures, so this
+// never traps. Returns the problem count (tests CHECK == 0). The zero Game
+// reads as clean (ZII).
+fn u32 validate(Game* game) {
+    World*          world    = &game->world;
+    const WorldMap* map      = &world->world_map;
+    SpatialMap*     spatial  = &game->spatial;
+    u32             problems = 0;
+
+    for (usize idx = 1; idx < BODY_KINDS.len(); idx++) {
+        if (BODY_KINDS[idx].speed > 1.0f) {
+            LOG("validate: body kind '%.*s' speed %f exceeds one cell per day", (int)BODY_KINDS[idx].name.len,
+                BODY_KINDS[idx].name.data, (f64)BODY_KINDS[idx].speed);
+            problems++;
+        }
+    }
+
+    usize on_map_count = 0;
+    for (usize slot = 1; slot <= world->high_water; slot++) {
+        const Thing* thing = &world->things[slot];
+        if (!thing->id) continue;
+        String name = resolve_name(world, thing->name);
+
+        if (thing->move_dest && !get(world, thing->move_dest)->id) {
+            LOG("validate: '%.*s' has a dead move destination", (int)name.len, name.data);
+            problems++;
+        }
+        if (!is_on_map(world, thing)) continue;
+        on_map_count++;
+
+        if (!in_bounds(map, thing->cell_pos)) {
+            LOG("validate: '%.*s' is off the map at %d,%d", (int)name.len, name.data, thing->cell_pos.x,
+                thing->cell_pos.y);
+            problems++;
+            continue;
+        }
+        const TerrainType* terrain = &TERRAIN_TYPES[(*map)[thing->cell_pos].terrain_type_idx];
+        if (!terrain->passable) {
+            LOG("validate: '%.*s' stands on impassable %.*s at %d,%d", (int)name.len, name.data, (int)terrain->name.len,
+                terrain->name.data, thing->cell_pos.x, thing->cell_pos.y);
+            problems++;
+        }
+        if (spatial->cell_heads) {
+            u32   seen   = 0;
+            usize walked = 0;
+            for (u16 at = spatial->cell_heads[cell_index(map, thing->cell_pos)]; at; at = spatial->cell_next[at]) {
+                if (at == thing->id.slot) seen++;
+                if (++walked > NUM_ENTITIES) break; // cycle: reported by the chain audit below
+            }
+            if (seen != 1) {
+                LOG("validate: '%.*s' appears %d times in its cell's chain", (int)name.len, name.data, (int)seen);
+                problems++;
+            }
+        }
+    }
+
+    if (spatial->cell_heads) {
+        usize chained = 0;
+        usize area    = (usize)map->width * (usize)map->height;
+        for (usize cell = 0; cell < area; cell++) {
+            usize walked = 0;
+            for (u16 at = spatial->cell_heads[cell]; at; at = spatial->cell_next[at]) {
+                if (++walked > NUM_ENTITIES) {
+                    LOG("validate: chain cycle at cell %d", (int)cell);
+                    problems++;
+                    break;
+                }
+                const Thing* thing = &world->things[at];
+                if (!thing->id || !is_on_map(world, thing) || !in_bounds(map, thing->cell_pos) ||
+                    cell_index(map, thing->cell_pos) != cell) {
+                    LOG("validate: chained slot %d does not belong at cell %d", (int)at, (int)cell);
+                    problems++;
+                }
+                chained++;
+            }
+        }
+        if (chained != on_map_count) {
+            LOG("validate: %d chained things but %d on-map things", (int)chained, (int)on_map_count);
+            problems++;
+        }
+    }
+    return problems;
 }
 
 enum class CommandKind : u32 {
@@ -425,7 +1156,29 @@ fn void tick(Game* game, TickCommands commands) {
     num_ticks         = max<usize>(num_ticks, 1);
 
     for (usize tick_idx = 0; tick_idx < num_ticks; tick_idx++) {
-        if (advance_day) { world->epoch++; }
+        if (advance_day) {
+            world->epoch++;
+            ScratchArena scratch(&game->arena);
+
+            auto intents = vec::make_vec<MoveIntent>(&game->arena, 64);
+            for (usize slot = 1; slot <= world->high_water; slot++) {
+                Thing* thing = &world->things[slot];
+                if (!thing->id || !thing->move_dest) continue;
+                MoveIntent intent = movement_intent(&game->spatial, world, thing);
+                if (intent.slot) vec::push(&intents, intent);
+            }
+
+            MoveDay day = movement_day_begin(game, &game->arena);
+            for (MoveIntent& intent : vec::slice(intents)) {
+                movement_step(game, &day, intent);
+            }
+
+            for (Event& event : game->events) {
+                event_log(world, event);
+            }
+        }
+
+        despawn_flush(&game->spatial, world);
 
         // Mutations stop here: derived indexes catch up before anyone reads them.
         hierarchy_refresh(game);
@@ -507,7 +1260,9 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
     for (usize slot = 1; slot <= world->high_water; slot++) {
         const Thing& thing = world->things[slot];
         // Dead slots keep their old fields until reuse — parity filters them.
-        if (!is_valid(thing.id)) { continue; }
+        if (!thing.id) { continue; }
+        // Contained things don't draw — the container is their visual.
+        if (get_parent(world, &thing, Hierarchy::LocationOf)->id) { continue; }
         const auto* body_kind = &BODY_KINDS[thing.body_kind_idx];
         if (body_kind->size <= 0.0) { continue; }
 
@@ -619,6 +1374,11 @@ fn void initialize(Arena* arena, Game* game) {
     World* world = &game->world;
     load_world_map(arena, "data/map.txt", &world->world_map);
 
+    // Persistent spatial allocations come from the Game-owned arena — the
+    // arena parameter is the FRAME arena and dies with the first frame.
+    if (!game->arena.base) { arena::reserve(&game->arena, GAME_ARENA_SIZE); }
+    spatial_initialize(&game->spatial, &world->world_map, &game->arena);
+
     // The setup tree is only read here: a scratch watermark reclaims the file
     // bytes and nodes on return. Names survive by copy into the name buffer.
     ScratchArena scratch(arena);
@@ -635,9 +1395,13 @@ fn void initialize(Arena* arena, Game* game) {
         LOG("setup: %.*s", (int)error.message.len, error.message.data);
     }
 
+    // Spawned ids, parallel to the entity roots — the second pass below walks
+    // the roots in the same order to wire cross-entity references by name.
+    auto spawned = vec::make_vec<Id>(arena, 64);
     for (const auto& root : result.roots) {
         if (root.key == "entity") {
             auto* thing = spawn(world);
+            vec::push(&spawned, thing->id);
             if (!thing->id) { break; }
 
             thing->name = define_name(world, tabula::get_text(&root, "name"));
@@ -653,9 +1417,30 @@ fn void initialize(Arena* arena, Game* game) {
         }
     }
 
+    // Second pass: fields that reference other entities by name, resolvable
+    // only once everything is spawned.
+    usize entity_idx = 0;
+    for (const auto& root : result.roots) {
+        if (root.key != "entity") continue;
+        if (entity_idx >= spawned.len) break;
+        Id mover = spawned[entity_idx++];
+
+        String target = tabula::get_text(&root, "move_to");
+        if (!target.len || !mover) continue;
+        Id dest = find_thing_by_name(world, target);
+        if (!dest) {
+            LOG("setup: move_to target '%.*s' not found", (int)target.len, target.data);
+            continue;
+        }
+        order_move(world, mover, dest);
+    }
+
     // Mutations stop here, same contract as tick: indexes fresh before the
-    // first frame reads.
+    // first frame reads, and the validation pass reports data that makes no
+    // sense (things off-road, dead references).
+    spatial_rebuild(&game->spatial, world);
     hierarchy_refresh(game);
+    validate(game);
 }
 
 } // namespace game
