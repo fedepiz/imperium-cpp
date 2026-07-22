@@ -36,9 +36,9 @@ namespace ray {
 
 namespace {
 
-// Boundary-TU exception to the fn rule: only these internal helpers are fn —
-// the ray.hpp API implementations below stay plain, keeping the one strong
-// definition every other TU links against.
+// Only these internal helpers are fn — the ray.hpp API implementations
+// below stay plain, keeping the one strong definition every other TU links
+// against.
 fn ::Color to_raylib(Color color) { return {color.r, color.g, color.b, color.a}; }
 
 fn ::Rectangle to_raylib(Rect rect) { return {rect.x, rect.y, rect.w, rect.h}; }

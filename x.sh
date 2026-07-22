@@ -10,7 +10,7 @@
 #   third_party  build dependencies into third_party/third_party.a
 #
 # Profiles: default is -O1 with ASSERT/LOG enabled; --release is -O2 with them
-# compiled out (CLAUDE.md: revisit); --debug adds -g to either.
+# compiled out for now; --debug adds -g to either.
 set -e
 cd "$(dirname "$0")"
 

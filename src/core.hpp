@@ -63,7 +63,7 @@ constexpr usize GB = 1024 * MB;
 #define LOG(fmt, ...) ((void)0)
 #endif
 
-// Small generic utilities — shallow, call-site obvious.
+// Small generic utilities.
 
 template <typename T> fn T min(T a, T b) { return a < b ? a : b; }
 template <typename T> fn T max(T a, T b) { return a > b ? a : b; }
@@ -113,10 +113,10 @@ template <const usize N> struct DynString;
 
 // String — an immutable view of bytes: pointer + length, not null-terminated.
 // Distinct from Slice<char>: its bytes can never be written through it (const
-// data), and it carries the three sanctioned implicit conversions — from a
-// null-terminated literal (String name = "Roma";), from Slice<char>, and from
-// DynString<N>, so builders assemble into a mutable slice or inline buffer
-// and the result travels as String.
+// data), and it converts implicitly from a null-terminated literal
+// (String name = "Roma";), from Slice<char>, and from DynString<N>, so
+// builders assemble into a mutable slice or inline buffer and the result
+// travels as String.
 struct String {
     usize       len;
     const char* data;
@@ -215,9 +215,10 @@ template <const usize N> struct DynString {
     char  data[N];
 
     // Bytes copy IN — the mirror of the String conversion out. Truncates to
-    // capacity silently (decided); append is the variant that refuses
-    // instead. memmove, so assigning a view of this same buffer is safe.
-    // Not a copy/move special member: the type stays trivially copyable.
+    // capacity silently; append is the variant that refuses instead.
+    // memmove, so assigning a view of this same buffer is safe. Takes
+    // String, not DynString, so it is no copy special member and the type
+    // stays trivially copyable.
     DynString& operator=(String s) {
         this->len = min(s.len, N);
         if (this->len) memmove(this->data, s.data, this->len);
@@ -235,7 +236,7 @@ template <const usize N> struct DynString {
     const char* end() const { return this->data + this->len; }
 };
 
-// The third sanctioned String conversion: a view of THIS buffer, valid until
+// The DynString -> String conversion: a view of THIS buffer, valid until
 // the next push/append/clear. A copied DynString carries its own bytes —
 // convert from the copy you keep.
 template <const usize N> String::String(const DynString<N>& s) : len{s.len}, data{s.data} {}

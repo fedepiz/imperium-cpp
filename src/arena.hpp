@@ -18,12 +18,12 @@ struct Arena {
     usize committed; // bytes backed by read/write pages, COMMIT_CHUNK-aligned
 };
 
-// NOT POD — a scantioned RAII type:
-// Captures the arena's watermark on construction and
-// restores it at scope exit, so everything allocated inside the scope is
-// reclaimed even on early return. Stack-local only — never store, serialize,
-// or arena-allocate one. Copies are deleted: a copy's destructor would
-// restore the watermark early, clobbering later allocations.
+// NOT POD — has a real destructor: captures the arena's watermark on
+// construction and restores it at scope exit, so everything allocated
+// inside the scope is reclaimed even on early return. Stack-local only —
+// never store, serialize, or arena-allocate one. Copies are deleted: a
+// copy's destructor would restore the watermark early, clobbering later
+// allocations.
 struct ScratchArena {
     Arena* arena;
     usize  saved_used;

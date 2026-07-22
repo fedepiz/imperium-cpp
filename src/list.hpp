@@ -29,8 +29,8 @@ template <typename T> struct Chunk {
     T*        values;
 };
 
-// Sanctioned non-arithmetic operator overloads: the chunk-hop is what an
-// iterator exists to hide. Zero Iter == end.
+// Iterator for range-for: the chunk-hop is what it exists to hide.
+// Zero Iter == end.
 template <typename T> struct Iter {
     Chunk<T>* chunk;
     usize     index;

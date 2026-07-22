@@ -1,6 +1,4 @@
 // ROOT: the test suite — dense tripwire tests for core and data modules.
-// Tests exist to trip, not to specify: each function exercises many behaviors
-// at once, and CHECK's file:line output is what makes a trip diagnosable.
 #include "core.hpp"
 #include "arena.hpp"
 #include "file_io.hpp"
@@ -177,7 +175,7 @@ fn b32 test_dynstring() {
 
     s = "assign";                     // operator=: bytes copy in, len replaced
     CHECK(s.len == 6 && s == "assign");
-    s = "0123456789";                 // over capacity: silent truncation — decided
+    s = "0123456789";                 // over capacity: silent truncation
     CHECK(s.len == 8 && s == "01234567");
     s = String{};                     // the empty string assigns as empty
     CHECK(s.len == 0);
@@ -1138,8 +1136,8 @@ fn b32 test_hashtable() {
     *hashtable::put(&t, 1) = 5; // reusable after clear
     CHECK(t.count == 1 && *hashtable::get(&t, 1) == 5);
 
-    // would_grow is the one home of the load-factor rule (grow at 3/4 load):
-    // capacity 8 holds 6 without growing; the 7th insert crosses.
+    // Load factor 3/4: capacity 8 holds 6 without growing; the 7th insert
+    // crosses.
     hashtable::Hashtable<i32> small = hashtable::make_table<i32>(&a, 4); // rounds up to 8
     CHECK(small.capacity == 8 && !hashtable::would_grow(&small, 6) && hashtable::would_grow(&small, 7));
     for (u64 k = 1; k <= 6; ++k) *hashtable::put(&small, k) = 1;
@@ -2110,10 +2108,9 @@ fn b32 test_ui_run() {
     return true;
 }
 
-// Corpus: the repo's real data files must load clean through the facade —
-// the equivalent of the Rust crate's integration test, and the first of the
-// corpus tests CLAUDE.md calls for. Also runs one headless frame end to
-// end: load -> bind -> run -> self-contained Result.
+// Corpus: the repo's real data files must load clean through the facade.
+// Also runs one headless frame end to end: load -> bind -> run ->
+// self-contained Result.
 fn b32 test_ui_corpus() {
     arena::Arena frame = {};
     arena::reserve(&frame, 16 * 1024 * 1024);

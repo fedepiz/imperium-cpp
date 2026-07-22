@@ -52,8 +52,8 @@ namespace {
 
 template <Key K, typename V, const usize N> struct Pool;
 
-// Sanctioned non-arithmetic operator overloads: skipping dead slots is what
-// the iterator exists to hide. Visits live entries only, dummy excluded.
+// Iterator for range-for: skipping dead slots is what it exists to hide.
+// Visits live entries only, dummy excluded.
 template <Key K, typename V, const usize N> struct Iter {
     Pool<K, V, N>* pool;
     u32            slot;

@@ -1,7 +1,7 @@
 #pragma once
 #include <string.h>
 #include <stdarg.h>
-#include <stdio.h> // vsnprintf only — the sanctioned formatting backend (CLAUDE.md)
+#include <stdio.h> // vsnprintf only — the backend of string::format
 
 #include "core.hpp"
 #include "arena.hpp"

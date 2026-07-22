@@ -2,12 +2,12 @@
 #include "core.hpp"
 #include "math.hpp"
 
-// Boundary wrapper around raylib — the one sanctioned break in the unity
-// build. raylib's header declares unprefixed C names (Color, Rectangle,
-// DrawText, the color macros, ...), so it never enters our TUs: this module
-// is declaration-only, and ray.cpp — the single TU that includes raylib.h —
-// implements it, converting types at the boundary. x.sh compiles ray.cpp
-// once to build/ray.o and links it into every binary.
+// Boundary wrapper around raylib. raylib's header declares unprefixed C
+// names (Color, Rectangle, DrawText, the color macros, ...), so it never
+// enters our TUs: this module is declaration-only, and ray.cpp — the single
+// TU that includes raylib.h — implements it, converting types at the
+// boundary. x.sh compiles ray.cpp once to build/ray.o and links it into
+// every binary.
 
 namespace ray {
 using namespace math; // Color and the color constants live in math.hpp; ray::Color still spells.

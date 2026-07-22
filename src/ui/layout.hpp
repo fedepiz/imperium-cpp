@@ -30,7 +30,7 @@
 
 namespace ui {
 namespace layout {
-using namespace math; // sanctioned: math value types are pervasive here (see CLAUDE.md)
+using namespace math; // math value types are pervasive here
 
 // --------------------------------------------------------------- identifiers
 
