@@ -145,9 +145,9 @@ struct Text {
 };
 
 // The element declaration. A ZII POD built with designated initializers at
-// the call site; every field's zero is the natural default. Sizing values
-// are expected non-negative (the Rust builder clamped; here the caller
-// simply doesn't pass negatives).
+// the call site; every field's zero is the natural default. Negative
+// constraint values (min/max, padding, gap, border) clamp to zero at
+// declaration; width/height Size values are expected non-negative.
 struct ElementConf {
     ElementId id;
     Size      width;

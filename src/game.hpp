@@ -13,7 +13,7 @@
 namespace game {
 using namespace arena;
 
-// The map of the world. Use sensible defaults for memory allocation
+// Map size caps; WorldMap embeds tile storage for the full cap.
 constexpr usize MAP_MAX_WIDTH  = 500;
 constexpr usize MAP_MAX_HEIGHT = 500;
 constexpr usize MAP_MAX_SIZE   = MAP_MAX_WIDTH * MAP_MAX_HEIGHT;
@@ -377,7 +377,7 @@ enum class EventKind : u32 {
     Arrival, // a completed its move order at b (its dest)
 };
 
-// Fat ZII payload, the Command pattern: kind selects the field roles —
+// Fat ZII payload: kind selects the field roles —
 // a is always the mover whose step emitted the event; b is the other party
 // (Meet) or the ordered destination (Arrival). Meeting something and
 // finishing an order are independent facts: one step may emit both, and the
