@@ -1339,7 +1339,6 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
     return out;
 }
 
-namespace {
 // Load the map from a text file: each character is one cell, matched against
 // TerrainType::sigil. A row is a non-empty line — blank lines anywhere are
 // formatting noise, and an intentional all-water row is written explicitly.
@@ -1414,7 +1413,6 @@ fn void load_world_map(Arena* arena, String path, WorldMap* world_map) {
         x += 1;
     }
 }
-} // namespace
 
 fn void initialize(Arena* arena, Game* game) {
     World* world = &game->world;

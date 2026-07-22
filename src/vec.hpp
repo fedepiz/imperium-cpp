@@ -36,8 +36,6 @@ template <typename T> struct Vec {
     }
 };
 
-namespace {
-
 // Internal — callers go through push. A null or exhausted arena is a
 // budgeting bug: no null checks, growing on one faults right here.
 template <typename T> fn void grow(Vec<T>* vec, usize new_capacity) {
@@ -56,8 +54,6 @@ template <typename T> fn void grow(Vec<T>* vec, usize new_capacity) {
     vec->data     = new_data;
     vec->capacity = new_capacity;
 }
-
-} // namespace
 
 template <typename T> fn Vec<T> make_vec(arena::Arena* arena, usize capacity) {
     Vec<T> result   = {};

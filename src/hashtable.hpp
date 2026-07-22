@@ -59,8 +59,6 @@ fn u64 mix(u64 key) {
     return key;
 }
 
-namespace {
-
 template <typename V> fn void grow(Hashtable<V>* table, usize new_capacity) {
     u64* old_keys     = table->keys;
     V*   old_values   = table->values;
@@ -80,8 +78,6 @@ template <typename V> fn void grow(Hashtable<V>* table, usize new_capacity) {
     }
     // The old block stays behind in the arena until it is reset — bulk lifetime.
 }
-
-} // namespace
 
 template <typename V> fn Hashtable<V> make_table(arena::Arena* arena, usize capacity) {
     Hashtable<V> result = {};

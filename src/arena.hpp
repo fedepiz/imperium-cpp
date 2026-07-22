@@ -37,15 +37,11 @@ struct ScratchArena {
     ScratchArena& operator=(const ScratchArena&) = delete;
 };
 
-namespace {
-
 // A multiple of every page size we run on (4K, and 16K on Apple silicon), so
 // commit ranges stay page-aligned without querying the OS.
 constexpr usize COMMIT_CHUNK = 64 * 1024;
 
 fn usize align_up(usize value, usize align) { return (value + align - 1) & ~(align - 1); }
-
-} // namespace
 
 fn void reserve(Arena* arena, usize capacity) {
     *arena   = {};

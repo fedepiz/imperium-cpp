@@ -38,17 +38,12 @@ template <Key K> fn b32 is_nil_key(K key) {
     return key.value == 0;
 }
 
-namespace {
-
 // The packed layout — private to the pool: slot in the low 32 bits,
 // generation in the high 32. The nil key falls out: zero value = slot 0,
-// generation 0. maybe_unused: only the templates below call these, so a
-// standalone parse of this module sees them unused.
-[[maybe_unused]] fn u32 key_slot(u64 value) { return (u32)value; }
-[[maybe_unused]] fn u32 key_generation(u64 value) { return (u32)(value >> 32); }
-[[maybe_unused]] fn u64 key_pack(u32 slot, u32 generation) { return (u64)slot | ((u64)generation << 32); }
-
-} // namespace
+// generation 0.
+fn u32 key_slot(u64 value) { return (u32)value; }
+fn u32 key_generation(u64 value) { return (u32)(value >> 32); }
+fn u64 key_pack(u32 slot, u32 generation) { return (u64)slot | ((u64)generation << 32); }
 
 template <Key K, typename V, const usize N> struct Pool;
 

@@ -20,11 +20,7 @@ fn const char* to_cstr(arena::Arena* arena, String s) {
     return cstr;
 }
 
-namespace {
-
 fn bool is_digit(char c) { return c >= '0' && c <= '9'; }
-
-} // namespace
 
 // printf-style formatting into an arena string. String arguments go through
 // the length-prefix idiom: format(a, "%.*s!", (int)s.len, s.data). The

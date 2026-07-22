@@ -34,7 +34,7 @@ Compile as C++20 with `-fno-exceptions -fno-rtti`. Treat warnings as errors.
 - `struct` with all members public; `enum class`; `union`; free functions
 - namespaces — one namespace per module; a directory of modules is one
   module with nested namespaces (`ui::layout`, `ui::ir`); anonymous
-  namespaces for module-internal helpers (see *Namespaces*)
+  namespaces in `.cpp` TUs only (see *Namespaces*)
 - templates, in a restrained way (containers, math, small generic utilities — see below)
 - lambdas passed as template callable parameters and invoked during the
   call — the monomorphized equivalent of a function pointer + context, used
@@ -110,9 +110,16 @@ name prefixes.
   `arena::push`, `world::Entity`, `world::spawn`, `renderer::flush`.
 - Exception: everything defined in `core.hpp` is global — the primitive
   aliases, `ASSERT`, `min`/`max`, `Array`, `Slice`, `String`. Nothing else is.
-- Module-internal helpers and globals go in an anonymous namespace inside the
-  module. Everything named in the module's namespace is that module's public
-  API — the split is visible in the file.
+- Module-internal helpers live directly in the module's namespace as plain
+  `fn` functions and `constexpr` / `inline const` values; declaration order
+  and section comments mark where the internals sit. Anonymous namespaces are
+  for `.cpp` TUs only (`ray.cpp`, roots), where internal linkage is real. In a
+  header module one buys no privacy (unnamed-namespace members are reachable
+  through the enclosing namespace from any includer) and sets an ODR trap: a
+  public `fn` (inline, merged across TUs) that touches an internal-linkage
+  helper makes each TU reference a different entity. A constant whose address
+  travels out of an inline function must be `inline const` for the same
+  reason (`tabula::NIL_NODE`).
 - `using namespace` is banned at every scope. Write the qualifier at every
   cross-module call site. If an unqualified cross-module call compiles anyway,
   that's ADL — treat it as a bug, not a convenience. Operator overloads are the
@@ -274,9 +281,11 @@ template <typename T> T* allocate(Arena* arena, usize count = 1);
 - **Nothing is freed individually.** Cleanup means clearing or resetting an
   arena. If you're writing a `foo_destroy` that walks objects to release them
   one by one, the design is wrong.
-- Truly fixed-size, known-at-compile-time data may simply live as globals in
-  the module's anonymous namespace or be embedded in the owning system struct
-  instead of arena-pushed.
+- Truly fixed-size, known-at-compile-time data may simply live as module-
+  namespace globals (`constexpr`, or `inline const` when its address travels)
+  or be embedded in the owning system struct instead of arena-pushed. Mutable
+  module state belongs in a system struct; in a `.cpp` TU it may sit in the
+  anonymous namespace (`ray.cpp`'s stores).
 
 ## Strings
 

@@ -104,11 +104,9 @@ struct ParseResult {
     Slice<ParseError> errors;
 };
 
-namespace {
-
 // Lookups on a missing key return this permanently-zeroed node, so chained
 // gets are always safe to call and read.
-const Node NIL_NODE = {};
+inline const Node NIL_NODE = {};
 
 constexpr u32 MAX_DEPTH = 500;
 
@@ -361,8 +359,6 @@ fn TermResult parse_item(Parser* p, u32 depth) {
     value.node.op  = op.op;
     return value;
 }
-
-} // namespace
 
 // Parse a whole source file. Never fails; see ParseResult. Everything in the
 // result lives in arena.

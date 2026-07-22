@@ -36,8 +36,6 @@ template <typename T> struct ReadFile {
     list::List<Error> messages; // empty = success
 };
 
-namespace {
-
 fn Error make_error(arena::Arena* arena, ErrorKind kind, String path, const char* cause) {
     usize cause_len = strlen(cause);
     char* text      = (char*)arena::allocate_raw(arena, path.len + 2 + cause_len, 1);
@@ -50,8 +48,6 @@ fn Error make_error(arena::Arena* arena, ErrorKind kind, String path, const char
     error.message = {path.len + 2 + cause_len, text};
     return error;
 }
-
-} // namespace
 
 fn ReadFile<Slice<u8>> read_file_to_bytes(arena::Arena* arena, String path) {
     ReadFile<Slice<u8>> result = {};

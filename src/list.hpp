@@ -57,11 +57,7 @@ template <typename T> struct List {
     Iter<T> end() { return {0, 0}; }
 };
 
-namespace {
-
 constexpr usize FIRST_CHUNK_CAP = 64;
-
-} // namespace
 
 template <typename T> fn List<T> make_list(arena::Arena* arena) {
     List<T> result = {};

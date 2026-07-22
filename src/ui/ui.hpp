@@ -54,9 +54,7 @@ struct Result {
     b32                pointer_over_ui;
 };
 
-namespace {
 constexpr usize UI_MODULE_ARENA_SIZE = 16 * 1024 * 1024;
-} // namespace
 
 // (Re)loads the UI: resets the module arena, reads and compiles the script
 // and its style, and returns every problem found — file errors, parse

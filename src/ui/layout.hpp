@@ -1197,10 +1197,8 @@ fn void sort_floating(Slice<FloatingEntry> entries) {
 
 // ------------------------------------------------------------------- engine
 
-namespace {
 constexpr usize ENGINE_FRAME_ARENA_SIZE      = 64 * 1024 * 1024;
 constexpr usize ENGINE_PERSISTENT_ARENA_SIZE = 64 * 1024 * 1024;
-} // namespace
 
 fn void engine_ensure(Engine* engine) {
     if (engine->persistent.base) return;
