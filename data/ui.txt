@@ -30,6 +30,25 @@ panel = {
 	}
 }
 
+# The travel target picker: things standing on the clicked map cell. The
+# app binds $TARGETS only while a picked cell has something to travel to.
+panel = {
+	x_pos = 0.01
+	y_pos = 0.5
+	width = 260
+	border = yes
+	visible = "$TARGETS"
+
+	heading = "Travel to"
+	list = {
+		id = "targets"
+		width = grow
+		template = {
+			button = { action = "travel_to = $TARGET_REF" text = "$TARGET_NAME" width = grow }
+		}
+	}
+}
+
 # Bottom panel
 panel = {
 	id = "bottom_panel"

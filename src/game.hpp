@@ -75,7 +75,7 @@ struct Id {
     u16 slot;
     u16 generation;
 
-    operator b32() const;
+         operator b32() const;
     bool operator==(const Id&) const = default;
 };
 
@@ -109,6 +109,8 @@ struct BodyKind {
     math::Color color;
     // The drawing layer
     u8 layer;
+    // Things of this kind can be entered (Action::Enter contains the actor).
+    b32 enterable;
 };
 
 // Double braces: the outer pair initializes the Array struct, the inner its
@@ -119,9 +121,15 @@ inline const Array<BodyKind, 3> BODY_KINDS = {{
      .size  = 0.5f,
      .style = BodyShape::Circle,
      .speed = 1.0f,
-     .color = {255, 255, 0, 255},
+     .color = {50, 100, 240, 255},
      .layer = 2},
-    {.name = "town", .size = 1.0f, .style = BodyShape::Rectangle, .speed = 0, .color = {200, 80, 80, 255}, .layer = 1},
+    {.name      = "town",
+     .size      = 1.0f,
+     .style     = BodyShape::Rectangle,
+     .speed     = 0,
+     .color     = {200, 80, 80, 255},
+     .layer     = 1,
+     .enterable = true},
 }};
 
 fn u8 lookup_body_kind(String name) {
@@ -138,6 +146,41 @@ enum class Hierarchy : u8 {
 
 constexpr usize HIERARCHY_COUNT = (usize)Hierarchy::Count;
 
+// The game's verbs, one flat vocabulary: what an interaction choice resolves
+// to, and what an order executes on arrival. Nil does nothing (a resolved
+// choice just closes; an arrival just stands there).
+enum class Action : u32 {
+    Nil,
+    Meet,  // placeholder — no consequences yet
+    Enter, // become contained in the target's map anchor (must be enterable)
+};
+
+// Action names as data files spell them ("on_arrival = enter"). Empty and
+// "nil" are the explicit nothing; unknown names LOG and read as Nil.
+fn Action action_from_name(String name) {
+    if (!name.len || name == String("nil")) return Action::Nil;
+    if (name == String("meet")) return Action::Meet;
+    if (name == String("enter")) return Action::Enter;
+    LOG("game: unknown action '%.*s'", (int)name.len, name.data);
+    return Action::Nil;
+}
+
+// A movement order: "move to dest, on arrival do action". Ending one —
+// arrival or cancel — is `move = {}`.
+struct MoveOrder {
+    // The destination THING (zero = no order). The goal cell re-resolves
+    // through the dest's LocationOf chain each day — traveling to someone
+    // inside a town is traveling to the town. Canceled (LOG) when the dest
+    // despawns or no road reaches it.
+    Id dest;
+    // Fractional step budget, in cells. Gains BodyKind::speed per day, capped
+    // at 1 (max speed is one cell per day); a step costs 1.
+    f32 points;
+    // What arriving executes. The player's collisions raise a prompt instead
+    // of auto-executing, so their orders usually carry Nil.
+    Action action;
+};
+
 struct Thing {
     Id id;
     // Set by mark_for_despawn; the thing stays alive (handles resolve) until
@@ -151,17 +194,8 @@ struct Thing {
     CellPos cell_pos;
     // Hierarchy parents
     Array<Id, HIERARCHY_COUNT> parents;
-    // Move order: the destination THING (zero = no order, ZII). The goal cell
-    // re-resolves through the dest's LocationOf chain each day — traveling to
-    // someone inside a town is traveling to the town. Canceled (LOG) when the
-    // dest despawns or no road reaches it.
-    Id move_dest;
-    // Fractional step budget, in cells. Gains BodyKind::speed per day, capped
-    // at 1 (max speed is one cell per day); a step costs 1; zeroed on
-    // arrival/cancel.
-    f32 move_points;
-    // Is this thing the player?
-    b32 is_player;
+    // Current movement order; zero = none.
+    MoveOrder move;
 };
 
 constexpr usize NUM_ENTITIES    = 32000;
@@ -185,29 +219,27 @@ enum ChoiceToggle : u8 {
     Enabled,
 };
 
-// What resolving a choice does. One flat vocabulary across all interactions;
-// Nil resolves to nothing (the interaction just closes).
-enum class ChoiceAction : u32 {
-    Nil,
-    Meet,
-};
-
 // Interaction state
 struct Choice {
     DynString<256> text;
-    ChoiceAction   action;
+    Action         action;
     ChoiceToggle   toggle;
 };
 
 struct Interaction {
     // False = no interaction
-    b32                   active;
-    DynString<256>        title;
-    DynString<2048>       description;
+    b32             active;
+    DynString<256>  title;
+    DynString<2048> description;
+    // Who the interaction is about: resolving a choice executes its Action
+    // with subject acting on target. Nil ids are fine — Nil actions never
+    // read them.
+    Id                    subject;
+    Id                    target;
     DynArray<Choice, 255> choices;
 };
 
-fn void add_choice(Interaction* interaction, String text, ChoiceAction action, ChoiceToggle toggle) {
+fn void add_choice(Interaction* interaction, String text, Action action, ChoiceToggle toggle) {
     if (push(&interaction->choices, {})) {
         Choice* choice = &interaction->choices[interaction->choices.len - 1];
         choice->text   = text;
@@ -239,6 +271,9 @@ struct World {
     // Global information
     // Days (in logical count)
     u64 epoch;
+    // The thing the player is: set by setup ("player = yes"), zero when no
+    // player exists.
+    Id player;
     // Current interaction
     Interaction interaction;
 };
@@ -413,6 +448,9 @@ struct Event {
     Id        subject;
     Id        target;
     CellPos   cell;
+    // The emitting order's carried intent, captured here because the step
+    // clears the order before the event loop consumes it.
+    Action action;
 };
 
 constexpr usize MAX_EVENTS      = 1024;
@@ -856,16 +894,16 @@ fn u64 pack_pair(u16 a, u16 b) {
 
 // Issue a move order. LOG + refuse movers that can never walk (dead, dummy,
 // bodiless, immobile body). The dest's liveness is only enforced at tick time
-// — it can despawn later anyway. dest = {} clears the order.
-fn void order_move(World* world, Id mover, Id dest) {
+// — it can despawn later anyway. dest = {} clears the order. Re-ordering
+// keeps the accrued step budget: changing your mind mid-road is not a rest.
+fn void order_move(World* world, Id mover, Id dest, Action on_arrival) {
     Thing* thing = get(world, mover);
     if (!thing->id) {
         LOG("order_move: dead or nil mover");
         return;
     }
     if (!dest) {
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        thing->move = {};
         return;
     }
     String name = resolve_name(world, thing->name);
@@ -873,8 +911,11 @@ fn void order_move(World* world, Id mover, Id dest) {
         LOG("order_move: '%.*s' cannot move (bodiless or immobile)", (int)name.len, name.data);
         return;
     }
-    thing->move_dest = dest;
+    thing->move.dest   = dest;
+    thing->move.action = on_arrival;
 }
+
+fn void order_move(World* world, Id mover, Id dest) { order_move(world, mover, dest, Action::Nil); }
 
 // One intended step, produced by movement_intent, executed by movement_step.
 // Whether the step ARRIVES is deliberately not computed here: the destination
@@ -895,19 +936,17 @@ struct MoveIntent {
 // covers the mover's whole day; {} means no step today (ZII — live slots
 // are >= 1).
 fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
-    if (!get(world, thing->move_dest)->id) {
+    if (!get(world, thing->move.dest)->id) {
         String name = resolve_name(world, thing->name);
         LOG("move: destination of '%.*s' is gone — order canceled", (int)name.len, name.data);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        thing->move = {};
         return {};
     }
-    Thing* goal_anchor = resolve_map_anchor(world, thing->move_dest);
+    Thing* goal_anchor = resolve_map_anchor(world, thing->move.dest);
     if (!goal_anchor->id) {
         String name = resolve_name(world, thing->name);
         LOG("move: destination of '%.*s' is nowhere on the map — order canceled", (int)name.len, name.data);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        thing->move = {};
         return {};
     }
     CellPos goal = goal_anchor->cell_pos;
@@ -918,15 +957,14 @@ fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
         if (!anchor->id) {
             String name = resolve_name(world, thing->name);
             LOG("move: '%.*s' is nowhere on the map and cannot exit — order canceled", (int)name.len, name.data);
-            thing->move_dest   = {};
-            thing->move_points = 0;
+            thing->move = {};
             return {};
         }
         return {thing->id.slot, anchor->cell_pos, true};
     }
 
-    thing->move_points = min(thing->move_points + BODY_KINDS[thing->body_kind_idx].speed, 1.0f);
-    if (thing->move_points < 1.0f) return {};
+    thing->move.points = min(thing->move.points + BODY_KINDS[thing->body_kind_idx].speed, 1.0f);
+    if (thing->move.points < 1.0f) return {};
 
     if (thing->cell_pos == goal) {
         return {thing->id.slot, thing->cell_pos, false}; // zero-length arrival
@@ -936,8 +974,7 @@ fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
         String name = resolve_name(world, thing->name);
         LOG("move: no road takes '%.*s' from %d,%d to %d,%d — order canceled", (int)name.len, name.data,
             thing->cell_pos.x, thing->cell_pos.y, goal.x, goal.y);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        thing->move = {};
         return {};
     }
     return {thing->id.slot, hop.cell, false};
@@ -985,7 +1022,7 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
     auto* thing   = &world->things[intent.slot];
     // Intent and step happen the same tick, but the re-check is cheap and
     // keeps the step safe against anything that cancels orders in between.
-    if (!thing->id || !thing->move_dest) return;
+    if (!thing->id || !thing->move.dest) return;
 
     b32 stepped     = false;
     Id  exited_from = {};
@@ -995,14 +1032,13 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
         // the outermost container, not the direct parent).
         exited_from = resolve_map_anchor(world, thing->id)->id;
         if (!exit_to_map(spatial, world, thing)) {
-            thing->move_dest   = {};
-            thing->move_points = 0;
+            thing->move = {};
             return;
         }
         stepped = true;
     } else if (!(intent.to == thing->cell_pos)) {
         move_thing(spatial, &world->world_map, thing, intent.to);
-        thing->move_points -= 1.0f;
+        thing->move.points -= 1.0f;
         stepped = true;
     }
 
@@ -1033,19 +1069,19 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
     // resolves the ORDER, not the pair. The goal re-resolves HERE, against
     // the dest's current cell — a chaser that steps onto the cell its
     // target just left has not arrived.
-    auto* goal_anchor = resolve_map_anchor(world, thing->move_dest);
+    auto* goal_anchor = resolve_map_anchor(world, thing->move.dest);
     if (goal_anchor->id && thing->cell_pos == goal_anchor->cell_pos) {
         Event event   = {};
         event.kind    = EventKind::Arrival;
         event.subject = thing->id;
-        event.target  = thing->move_dest;
+        event.target  = thing->move.dest;
         event.cell    = thing->cell_pos;
+        event.action  = thing->move.action;
         if (!push(&game->events, event) && !day->logged_full) {
             LOG("movement: event buffer full — records dropped");
             day->logged_full = true;
         }
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        thing->move = {};
     }
 }
 
@@ -1092,7 +1128,7 @@ fn u32 validate(Game* game) {
         if (!thing->id) continue;
         String name = resolve_name(world, thing->name);
 
-        if (thing->move_dest && !get(world, thing->move_dest)->id) {
+        if (thing->move.dest && !get(world, thing->move.dest)->id) {
             LOG("validate: '%.*s' has a dead move destination", (int)name.len, name.data);
             problems++;
         }
@@ -1155,7 +1191,8 @@ fn u32 validate(Game* game) {
 
 enum class CommandKind : u32 {
     Nil,
-    Choose, // pick choice choice_index (1-based, 0 = none) in the open interaction
+    Choose,   // pick choice choice_index (1-based, 0 = none) in the open interaction
+    TravelTo, // order the player to travel to travel_dest
 };
 
 // Fat ZII payload: kind selects which fields mean anything, the rest stay
@@ -1164,11 +1201,14 @@ struct Command {
     CommandKind kind;
     // 1-based choice index; 0 = none.
     u8 choice_index;
+    // Travel destination.
+    Id travel_dest;
 };
 
-// Read the sim's fields out of one action record ("choose = 2"). Absent or
-// unusable fields leave the Nil command (unusable LOGs); the first present
-// verb wins.
+// Read the sim's fields out of one action record ("choose = 2",
+// "travel_to = { 5 7 }" — an id as its two halves, slot then generation).
+// Absent or unusable fields leave the Nil command (unusable LOGs); the
+// first present verb wins.
 fn Command parse_command(const tabula::Node* root) {
     tabula::Value choose = tabula::get_value(root, "choose");
     if (choose.is_number) {
@@ -1180,6 +1220,23 @@ fn Command parse_command(const tabula::Node* root) {
         Command result      = {};
         result.kind         = CommandKind::Choose;
         result.choice_index = (u8)index;
+        return result;
+    }
+
+    const tabula::Node* travel = tabula::get(root, "travel_to");
+    if (travel->kind == tabula::Kind::Block) {
+        tabula::Value slot       = tabula::item_value(travel, 0);
+        tabula::Value generation = tabula::item_value(travel, 1);
+        i64           slot_value = (i64)slot.number;
+        i64           gen_value  = (i64)generation.number;
+        if (!slot.is_number || !generation.is_number || slot_value < 1 || slot_value > 65535 || gen_value < 0 ||
+            gen_value > 65535) {
+            LOG("game: travel_to unusable (want { slot generation })");
+            return {};
+        }
+        Command result     = {};
+        result.kind        = CommandKind::TravelTo;
+        result.travel_dest = {(u16)slot_value, (u16)gen_value};
         return result;
     }
 
@@ -1197,17 +1254,67 @@ struct TickCommands {
 // commands while this holds, but suppress time advance. The UI should act accordingly
 fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
 
+// Raise the player's collision prompt: choices derive from what the target
+// affords (enterable → Enter; otherwise a greeting). An already-open
+// interaction wins — later collisions this tick still reach the event log,
+// they just don't prompt. The scratch only backs the formatted description;
+// the Interaction copies everything into World.
+fn void prompt_collision(World* world, EventKind kind, Id subject, Id target_id, Arena* scratch) {
+    if (world->interaction.active) return;
+    const Thing* target = get(world, target_id);
+    if (!target->id) return;
+
+    String       name        = resolve_name(world, target->name);
+    Interaction* interaction = &world->interaction;
+    interaction->active      = true;
+    interaction->subject     = subject;
+    interaction->target      = target_id;
+    interaction->title       = name;
+    const char* verb         = kind == EventKind::Arrival ? "You have reached" : "You have met";
+    interaction->description = string::format(scratch, "%s %.*s.", verb, (int)name.len, name.data);
+
+    if (BODY_KINDS[target->body_kind_idx].enterable) {
+        add_choice(interaction, "Enter", Action::Enter, ChoiceToggle::Enabled);
+    } else {
+        add_choice(interaction, "Greet", Action::Meet, ChoiceToggle::Enabled);
+    }
+    add_choice(interaction, "Move on", Action::Nil, ChoiceToggle::Enabled);
+}
+
+// Execute one Action with subject acting on target — the single interpreter
+// behind both doorways into the vocabulary (resolved choices, NPC arrivals).
+// Targets may have died or moved since the action was chosen: refusals LOG
+// and the world stays consistent.
+fn void action_execute(Game* game, Action action, Id subject, Id target) {
+    World* world = &game->world;
+    switch (action) {
+        case Action::Nil: break;
+        case Action::Meet: break; // placeholder — no consequences yet
+        case Action::Enter: {
+            Thing* anchor = resolve_map_anchor(world, target);
+            if (anchor->id && BODY_KINDS[anchor->body_kind_idx].enterable) {
+                enter_container(&game->spatial, world, subject, anchor->id);
+            } else {
+                String name = resolve_name(world, get(world, subject)->name);
+                LOG("action: '%.*s' cannot enter — target is gone or not enterable", (int)name.len, name.data);
+            }
+        } break;
+    }
+}
+
 fn void tick(Game* game, TickCommands commands) {
     World* world = &game->world;
 
     // Process the commands...
-    // The last Choose wins: at most one interaction resolves per tick.
-    // 1-based, 0 = none (ZII).
+    // The last of each verb wins: at most one interaction resolves and one
+    // travel order issues per tick. 1-based, 0 = none (ZII).
     u8 interaction_choice_idx = 0;
+    Id travel_dest            = {};
     for (auto& command : commands.commands) {
         switch (command.kind) {
-            case game::CommandKind::Nil: break;
-            case game::CommandKind::Choose: interaction_choice_idx = command.choice_index; break;
+            case CommandKind::Nil: break;
+            case CommandKind::Choose: interaction_choice_idx = command.choice_index; break;
+            case CommandKind::TravelTo: travel_dest = command.travel_dest; break;
         }
     }
 
@@ -1224,12 +1331,23 @@ fn void tick(Game* game, TickCommands commands) {
             LOG("game: choose %d is disabled, dropped", interaction_choice_idx);
         } else {
             Choice choice = interaction->choices[interaction_choice_idx - 1];
-            switch (choice.action) {
-                case ChoiceAction::Nil: break;
-                case ChoiceAction::Meet: break; // no consequences yet
-            }
+            action_execute(game, choice.action, interaction->subject, interaction->target);
             // Every resolved choice closes the interaction.
             world->interaction = {};
+        }
+    }
+
+    if (travel_dest) {
+        // Travel comes from the target picker: the world may have moved on
+        // since the click, so refusals LOG and drop.
+        if (!get(world, world->player)->id) {
+            LOG("game: travel_to with no player, dropped");
+        } else if (travel_dest == world->player) {
+            LOG("game: travel_to the player themself, dropped");
+        } else if (!get(world, travel_dest)->id) {
+            LOG("game: travel_to a dead target, dropped");
+        } else {
+            order_move(world, world->player, travel_dest);
         }
     }
 
@@ -1250,7 +1368,7 @@ fn void tick(Game* game, TickCommands commands) {
 
             for (usize slot = 1; slot <= world->high_water; slot++) {
                 Thing* thing = &world->things[slot];
-                if (!thing->id || !thing->move_dest) continue;
+                if (!thing->id || !thing->move.dest) continue;
                 MoveIntent intent = movement_intent(&game->spatial, world, thing);
                 if (intent.slot) vec::push(&intents, intent);
             }
@@ -1260,18 +1378,17 @@ fn void tick(Game* game, TickCommands commands) {
                 movement_step(game, &day, intent);
             }
 
+            // Consume the day's events: the player's collisions prompt, NPC
+            // arrivals execute their order's carried intent, everything logs.
             for (Event& event : game->events) {
-                if (event.kind == EventKind::Meet) {
-                    auto subject = get(world, event.subject);
-                    if (subject->is_player) {
-                        world->interaction.active      = true;
-                        world->interaction.title       = "Test title";
-                        world->interaction.description = "This is a test event";
-
-                        add_choice(&world->interaction, "Choice A", ChoiceAction::Meet, ChoiceToggle::Enabled);
-                        add_choice(&world->interaction, "Choice B", ChoiceAction::Meet, ChoiceToggle::Enabled);
-                        add_choice(&world->interaction, "Choice C", ChoiceAction::Meet, ChoiceToggle::Disabled);
-                    }
+                if (event.subject == world->player) {
+                    prompt_collision(world, event.kind, event.subject, event.target, &game->arena);
+                } else if (event.kind == EventKind::Meet && event.target == world->player) {
+                    // Being walked into is a collision too — the prompt's
+                    // subject is always the player, target the other party.
+                    prompt_collision(world, event.kind, event.target, event.subject, &game->arena);
+                } else if (event.kind == EventKind::Arrival) {
+                    action_execute(game, event.action, event.subject, event.target);
                 }
                 event_log(world, event);
             }
@@ -1281,6 +1398,10 @@ fn void tick(Game* game, TickCommands commands) {
 
         // Mutations stop here: derived indexes catch up before anyone reads them.
         hierarchy_refresh(game);
+
+        // An open prompt holds time: the remaining requested days are
+        // dropped, not queued — the pump re-requests once it resolves.
+        if (forced_pause(game)) { break; }
     }
 }
 
@@ -1403,8 +1524,10 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
         // Cull by overlap, not center: a half-visible body still draws.
         auto clipped = math::intersect(visible, bounds);
         if (clipped.w <= 0 || clipped.h <= 0) { continue; }
-        MapItem item = {};
-        item.style = body_kind->style, item.bounds = bounds, item.color = body_kind->color,
+        MapItem item  = {};
+        auto    color = body_kind->color;
+        if (thing.id == world->player) { color = {255, 255, 0, 255}; }
+        item.style = body_kind->style, item.bounds = bounds, item.color = color;
         item.layer = body_kind->layer;
         vec::push(&items, item);
     }
@@ -1413,7 +1536,6 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
     return out;
 }
 
-namespace {
 // Load the map from a text file: each character is one cell, matched against
 // TerrainType::sigil. A row is a non-empty line — blank lines anywhere are
 // formatting noise, and an intentional all-water row is written explicitly.
@@ -1496,7 +1618,6 @@ fn void load_world_map(Arena* arena, String path, WorldMap* world_map) {
         x += 1;
     }
 }
-} // namespace
 
 fn void initialize(Arena* arena, Game* game) {
     World* world = &game->world;
@@ -1542,7 +1663,7 @@ fn void initialize(Arena* arena, Game* game) {
             auto pos          = tabula::get(&root, "pos");
             thing->cell_pos.x = (i32)tabula::item_number(pos, 0);
             thing->cell_pos.y = (i32)tabula::item_number(pos, 1);
-            thing->is_player  = tabula::get_bool(&root, "player");
+            if (tabula::get_bool(&root, "player")) { world->player = thing->id; }
         }
     }
 
@@ -1561,7 +1682,7 @@ fn void initialize(Arena* arena, Game* game) {
             LOG("setup: move_to target '%.*s' not found", (int)target.len, target.data);
             continue;
         }
-        order_move(world, mover, dest);
+        order_move(world, mover, dest, action_from_name(tabula::get_text(&root, "on_arrival")));
     }
 
     // Mutations stop here, same contract as tick: indexes fresh before the

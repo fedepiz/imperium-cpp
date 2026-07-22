@@ -577,8 +577,17 @@ running the game, not by unit tests.
   There is no shared runner arena.
 - `./x.sh build` compiles every root, so test code can never silently
   rot; `./x.sh test` rebuilds when stale, then runs the suite.
-- Later, when file I/O exists: a corpus test parses every real data file
-  under `assets/` and demands zero errors.
+- **Invariants, never choreography** (decided 2026-07-22, after purging a
+  crop of scripted-journey tests). Sim tests may assert contracts that
+  survive any rules change — `validate() == 0`, orders terminate, a
+  resolved choice closes the interaction, wire formats parse — never
+  gameplay choreography (who meets whom on which day, what a prompt
+  offers). Rules and tuning are content; playing the game is their test.
+- The corpus test (`test_game_corpus`) loads the real `data/` files,
+  demands zero problems, then plays blind — ordering the player somewhere
+  and resolving every prompt sight unseen — with `validate() == 0` held
+  every day. Editing `data/` must never break it unless the data is
+  actually broken.
 
 ## When extending this document
 

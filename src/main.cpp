@@ -26,6 +26,8 @@ struct Command {
     // Pan intent as a normalized direction; speed, smoothing and dt stay
     // inside camera_update.
     math::V2 camera_move;
+    // Snap the camera back onto the player.
+    b32 follow_player;
     // Sim-bound command, queued into this frame's TickCommands.
     game::Command game;
     // Set only when the source was garbled or unknown; apply just prints it.
@@ -97,6 +99,7 @@ fn void key_input(vec::Vec<Command>* out) {
     Command command = {};
     if (ray::key_pressed(ray::Key::R)) command.reload_ui = true;
     if (ray::key_pressed(ray::Key::Space)) command.time.toggle_pause = true;
+    if (ray::key_pressed(ray::Key::F)) command.follow_player = true;
 
     math::V2 dir = {};
     if (ray::key_down(ray::Key::Left) || ray::key_down(ray::Key::A)) dir.x -= 1;
@@ -131,6 +134,16 @@ fn void camera_update(MovingCamera* camera, math::V2 dir, f32 dt) {
     camera->velocity.y += (dir.y * CAMERA_SPEED - camera->velocity.y) * blend;
     camera->inner.target.x += camera->velocity.x * dt;
     camera->inner.target.y += camera->velocity.y * dt;
+}
+
+// Eases the view onto the followed world position; the same exponential
+// smoothing as camera_update, applied to the target instead of the velocity.
+fn void camera_follow(MovingCamera* camera, math::V2 target, f32 dt) {
+    constexpr f32 FOLLOW_SMOOTH_TIME = 0.25f; // seconds to close ~63% of the gap
+
+    f32 blend = 1 - expf(-dt / FOLLOW_SMOOTH_TIME);
+    camera->inner.target.x += (target.x - camera->inner.target.x) * blend;
+    camera->inner.target.y += (target.y - camera->inner.target.y) * blend;
 }
 
 fn math::Rect camera_view_rect(MovingCamera camera, math::V2 screen_size) {
@@ -205,6 +218,37 @@ fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState*
         ui::data::begin_row(data);
         ui::data::bind(data, "LEVEL", string::format(frame, "%d", level));
         ui::data::bind(data, "ENABLED", !paused && time->speed != level);
+    }
+}
+
+// The travel target picker: one clicked map cell, whose occupants are
+// re-listed every frame from the live world.
+struct TargetPick {
+    b32           open;
+    game::CellPos cell;
+};
+
+// Binds the picked cell's things as travel targets. The panel hides when
+// nothing but the player stands there; ids cross the action wire in
+// parse_command's "travel_to = { slot generation }" form.
+fn void fill_target_data(ui::data::Data* data, arena::Arena* frame, const game::Game* game, TargetPick pick) {
+    if (!pick.open) return;
+    const game::World* world = &game->world;
+
+    usize count = 0;
+    for (const game::Thing* thing : game::occupants_of(&game->spatial, world, pick.cell)) {
+        count += thing->id == world->player ? 0 : 1;
+    }
+    if (!count) return;
+
+    ui::data::bind_global(data, "TARGETS", true);
+    ui::data::begin_list(data, "targets");
+    for (const game::Thing* thing : game::occupants_of(&game->spatial, world, pick.cell)) {
+        if (thing->id == world->player) continue;
+        ui::data::begin_row(data);
+        ui::data::bind(data, "TARGET_REF",
+                       string::format(frame, "{ %d %d }", (int)thing->id.slot, (int)thing->id.generation));
+        ui::data::bind(data, "TARGET_NAME", game::resolve_name(world, thing->name));
     }
 }
 
@@ -293,6 +337,12 @@ int main() {
     ray::Font font = ray::load_font_from_file("assets/fonts/default.ttf", 48);
 
     MovingCamera camera = {};
+    // target is pinned at offset: half the screen, so the point the camera
+    // holds (the followed player, a pan) sits in the middle, not the corner.
+    camera.inner.offset = {(f32)config.screen_width / 2, (f32)config.screen_height / 2};
+    // Manual panning switches to free look; F snaps back onto the player.
+    b32        free_look = false;
+    TargetPick pick      = {};
 
     ui::Ui hud = {};
     load_ui(&hud);
@@ -319,6 +369,7 @@ int main() {
 
         auto ui_data = game::extract_ui_data(&frame_arena, game);
         fill_ui_data(&ui_data, &frame_arena, &time, forced_pause);
+        fill_target_data(&ui_data, &frame_arena, game, pick);
 
         ui::Input input     = {};
         input.bounds        = {0, 0, (f32)config.screen_width, (f32)config.screen_height};
@@ -338,14 +389,39 @@ int main() {
             vec::push(&commands, parse_command(&frame_arena, action));
         }
 
+        // A world click — one the UI didn't claim — picks a map cell; its
+        // occupants become the travel targets shown from next frame on.
+        // Clicking bare ground closes the picker.
+        if (input.mouse_pressed && !ui_frame.pointer_over_ui) {
+            math::V2      clicked = ray::screen_to_world(camera.inner, input.mouse_pos);
+            game::CellPos cell    = {(i32)floorf(clicked.x / game::CELL_SIZE + 0.5f),
+                                     (i32)floorf(clicked.y / game::CELL_SIZE + 0.5f)};
+            pick = {};
+            if (game::in_bounds(&game->world.world_map, cell)) {
+                pick.open = true;
+                pick.cell = cell;
+            }
+        }
+
         auto game_commands = vec::make_vec<game::Command>(&frame_arena, 8);
 
         for (const auto& command : commands) {
             if (command.log_msg.len) LOG("command: %.*s", (int)command.log_msg.len, command.log_msg.data);
             if (command.reload_ui) load_ui(&hud);
             time_update(&time, command.time);
+            if (command.camera_move.x != 0 || command.camera_move.y != 0) free_look = true;
+            if (command.follow_player) free_look = false;
             camera_update(&camera, command.camera_move, ray::frame_time());
+            if (command.game.kind == game::CommandKind::TravelTo) pick = {}; // the picker served its purpose
             if (command.game.kind != game::CommandKind::Nil) vec::push(&game_commands, command.game);
+        }
+
+        if (!free_look) {
+            game::Thing* anchor = game::resolve_map_anchor(&game->world, game->world.player);
+            if (anchor->id) {
+                math::V2 focus = {anchor->cell_pos.x * game::CELL_SIZE, anchor->cell_pos.y * game::CELL_SIZE};
+                camera_follow(&camera, focus, ray::frame_time());
+            }
         }
 
         // After camera_update, so the culling rect is this frame's view.

@@ -115,6 +115,40 @@ The command queue itself is app-owned (outside World); `tick`'s signature
 names its two inputs. Accepted consequence: commands pending at save time
 are lost — kept rare by the always-on pump draining every frame.
 
+## The player, orders, and actions
+
+Decided 2026-07-22. The game is ROTK X-shaped: the player IS one Thing
+(`is_player`), not a god-view commander. The map is a viewer and a *target
+picker* — the player only ever commands themself, and all intent enters as
+commands (mutation context 4). Click a cell → a panel lists the visible
+things standing there → picking one issues `travel_to = <packed id>` (an
+integer payload — commands are the replay log). Clicking empty ground
+selects nothing; orders target things, never cells, until a real need says
+otherwise.
+
+- **One flat Action vocabulary** (`game::Action`: Nil, Meet, Enter, ...):
+  the game's verbs. Interaction choices resolve to an Action; orders carry
+  one. New doorways into the vocabulary don't grow new enums.
+- **Orders are "move to X, on arrival do Y"**: `Thing::move_dest` +
+  `Thing::move_action`. NPCs execute Y serially in the tick's
+  event-consumption loop (the Arrival event carries the action, because the
+  step already cleared the order). Y = Nil means arrive and stand there.
+- **The player is prompted instead**: a collision — a Meet, or arrival at
+  the ordered destination — raises an Interaction whose choices are derived
+  from the target's affordances (`BodyKind::enterable` → Enter; a person →
+  a greeting). The Interaction records subject and target so a resolved
+  choice knows who acts on what. First prompt wins the tick; an open
+  interaction is never overwritten (later events still log), and the day
+  loop stops advancing once one opens — remaining requested days are
+  dropped, not queued.
+- Meeting a town IS the entry prompt: stepping onto its cell fires the Meet,
+  whose prompt offers Enter. A prompt declined leaves you standing on the
+  cell; re-targeting the town produces a zero-length arrival and a fresh
+  prompt.
+- Camera follows the player's map anchor (presentation only); manual pan
+  breaks into free look; one key re-engages follow. ZII: the zero camera
+  follows.
+
 ## Saves
 
 - Snapshot format: `{magic, version, sizeof(World)}` header + the World

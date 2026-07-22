@@ -595,6 +595,16 @@ fn void tick_day(game::Game* g) {
     game::tick(g, commands);
 }
 
+// Resolve the open interaction (1-based index), advancing no days.
+fn void send_choice(game::Game* g, u8 index) {
+    game::Command command       = {};
+    command.kind                = game::CommandKind::Choose;
+    command.choice_index        = index;
+    game::TickCommands commands = {};
+    commands.commands           = {1, &command};
+    game::tick(g, commands);
+}
+
 fn usize count_occupants(game::Game* g, i32 x, i32 y) {
     usize count = 0;
     for (game::Thing* thing : game::occupants_of(&g->spatial, &g->world, {x, y})) {
@@ -609,19 +619,6 @@ fn b32 cell_has(game::Game* g, i32 x, i32 y, game::Id id) {
         if (thing->id.slot == id.slot && thing->id.generation == id.generation) return true;
     }
     return false;
-}
-
-fn usize count_events(game::Game* g, game::EventKind kind) {
-    usize count = 0;
-    for (game::Event& event : g->events) { count += event.kind == kind ? 1 : 0; }
-    return count;
-}
-
-fn const game::Event* first_event(game::Game* g, game::EventKind kind) {
-    for (game::Event& event : g->events) {
-        if (event.kind == kind) return &event;
-    }
-    return 0;
 }
 
 fn b32 test_game_spatial() {
@@ -759,199 +756,9 @@ fn b32 test_game_pathfinding() {
     return true;
 }
 
-fn b32 test_game_movement_meetings() {
-    arena::Arena a = {};
-    arena::reserve(&a, 64 * 1024 * 1024);
-
-    // T1 standing meeting: a mover walks past a stander — one Meet, then quiet.
-    {
-        auto* g = make_test_game(&a, 10, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 8, 1);
-        game::Thing* mover   = spawn_bodied(w, "person", 1, 1);
-        game::Thing* stander = spawn_bodied(w, "person", 2, 1);
-        game::Thing* town    = spawn_bodied(w, "town", 8, 1);
-        game_ready(g);
-        game::order_move(w, mover->id, town->id);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Meet) == 1 && count_events(g, game::EventKind::Arrival) == 0);
-        const game::Event* meet = first_event(g, game::EventKind::Meet);
-        CHECK(meet->subject.slot == mover->id.slot && meet->target.slot == stander->id.slot);
-        CHECK(meet->cell.x == 2 && meet->cell.y == 1);
-        tick_day(g);
-        CHECK(g->events.len == 0); // walked on: the pair does not re-fire
-        arena::release(&g->arena);
-    }
-
-    // T3 adjacent swap: sequential resolution makes the first stepper enter a
-    // still-occupied cell — exactly one Meet, then they part in silence.
-    {
-        auto* g = make_test_game(&a, 10, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 8, 1);
-        game::Thing* left   = spawn_bodied(w, "person", 3, 1);
-        game::Thing* right  = spawn_bodied(w, "person", 4, 1);
-        game::Thing* town_w = spawn_bodied(w, "town", 1, 1);
-        game::Thing* town_e = spawn_bodied(w, "town", 8, 1);
-        game_ready(g);
-        game::order_move(w, left->id, town_e->id);
-        game::order_move(w, right->id, town_w->id);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Meet) == 1);
-        const game::Event* meet = first_event(g, game::EventKind::Meet);
-        CHECK(meet->cell.x == 4 && meet->cell.y == 1);          // left stepped in first
-        CHECK(left->cell_pos.x == 4 && right->cell_pos.x == 3); // swapped
-        tick_day(g);
-        CHECK(g->events.len == 0); // moving apart
-        arena::release(&g->arena);
-    }
-
-    // T2 crossing (1-cell gap): both intend the middle cell; the second
-    // arrival meets the first. Next day they part as day-start companions.
-    {
-        auto* g = make_test_game(&a, 10, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 8, 1);
-        game::Thing* left   = spawn_bodied(w, "person", 3, 1);
-        game::Thing* right  = spawn_bodied(w, "person", 5, 1);
-        game::Thing* town_w = spawn_bodied(w, "town", 1, 1);
-        game::Thing* town_e = spawn_bodied(w, "town", 8, 1);
-        game_ready(g);
-        game::order_move(w, left->id, town_e->id);
-        game::order_move(w, right->id, town_w->id);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Meet) == 1);
-        const game::Event* meet = first_event(g, game::EventKind::Meet);
-        CHECK(meet->cell.x == 4 && left->cell_pos.x == 4 && right->cell_pos.x == 4);
-        tick_day(g);
-        CHECK(g->events.len == 0 && left->cell_pos.x == 5 && right->cell_pos.x == 3);
-        arena::release(&g->arena);
-    }
-
-    // T4 convergence: two movers arrive at the same EMPTY junction cell in
-    // one day — the live grid still fires exactly one Meet.
-    {
-        auto* g = make_test_game(&a, 5, 4);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 3, 1);
-        paint_road(w, 2, 2, 2, 2);
-        game::Thing* a_thing = spawn_bodied(w, "person", 1, 1);
-        game::Thing* b_thing = spawn_bodied(w, "person", 3, 1);
-        game::Thing* town    = spawn_bodied(w, "town", 2, 2);
-        game_ready(g);
-        game::order_move(w, a_thing->id, town->id);
-        game::order_move(w, b_thing->id, town->id);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Meet) == 1);
-        const game::Event* meet = first_event(g, game::EventKind::Meet);
-        CHECK(meet->cell.x == 2 && meet->cell.y == 1);
-        tick_day(g); // both enter the town cell as companions: no Meet(a, b)
-        CHECK(count_events(g, game::EventKind::Arrival) == 2);
-        arena::release(&g->arena);
-    }
-
-    // T5 equal-speed chase, fleer's slot first: the chaser always enters the
-    // cell the fleer just vacated — never a Meet, never a false arrival.
-    {
-        auto* g = make_test_game(&a, 10, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 8, 1);
-        game::Thing* fleer  = spawn_bodied(w, "person", 3, 1); // lower slot: steps first
-        game::Thing* chaser = spawn_bodied(w, "person", 2, 1);
-        game::Thing* town   = spawn_bodied(w, "town", 8, 1);
-        game_ready(g);
-        game::order_move(w, fleer->id, town->id);
-        game::order_move(w, chaser->id, fleer->id);
-        for (usize day = 0; day < 3; day++) {
-            tick_day(g);
-            CHECK(g->events.len == 0);
-            CHECK(chaser->cell_pos.x == fleer->cell_pos.x - 1); // gap stays one
-            CHECK((b32)chaser->move_dest); // the chase is still on
-        }
-        arena::release(&g->arena);
-    }
-
-    // T6 companions: a co-located pair marching together stays silent.
-    {
-        auto* g = make_test_game(&a, 10, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 8, 1);
-        game::Thing* first  = spawn_bodied(w, "person", 2, 1);
-        game::Thing* second = spawn_bodied(w, "person", 2, 1);
-        game::Thing* town   = spawn_bodied(w, "town", 8, 1);
-        game_ready(g);
-        game::order_move(w, first->id, town->id);
-        game::order_move(w, second->id, town->id);
-        tick_day(g);
-        tick_day(g);
-        CHECK(g->events.len == 0);
-        CHECK(first->cell_pos.x == 4 && second->cell_pos.x == 4);
-        arena::release(&g->arena);
-    }
-
-    arena::release(&a);
-    return true;
-}
-
 fn b32 test_game_movement_orders() {
     arena::Arena a = {};
     arena::reserve(&a, 64 * 1024 * 1024);
-
-    // T7 arrival: order resolution and the Meet with the destination are
-    // orthogonal records of the same step.
-    {
-        auto* g = make_test_game(&a, 8, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 6, 1);
-        game::Thing* person = spawn_bodied(w, "person", 2, 1);
-        game::Thing* town   = spawn_bodied(w, "town", 5, 1);
-        game_ready(g);
-        game::order_move(w, person->id, town->id);
-        tick_day(g);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Arrival) == 0 && (b32)person->move_dest);
-        tick_day(g); // steps onto the town cell
-        CHECK(count_events(g, game::EventKind::Arrival) == 1 && count_events(g, game::EventKind::Meet) == 1);
-        const game::Event* arrival = first_event(g, game::EventKind::Arrival);
-        const game::Event* meet    = first_event(g, game::EventKind::Meet);
-        CHECK(arrival->subject.slot == person->id.slot && arrival->target.slot == town->id.slot);
-        CHECK(meet->target.slot == town->id.slot);
-        // One stream keeps emission order: the step's Meet precedes its Arrival.
-        CHECK(g->events.len == 2 && g->events[0].kind == game::EventKind::Meet);
-        CHECK(!person->move_dest && person->move_points == 0);
-        CHECK(cell_has(g, 5, 1, person->id));
-        tick_day(g); // no order: nothing moves, nothing fires
-        CHECK(g->events.len == 0 && person->cell_pos.x == 5);
-
-        // Zero-length arrival: ordered to a co-resident dest — no step, no
-        // Meet (already together), just the arrival.
-        game::order_move(w, person->id, town->id);
-        tick_day(g);
-        CHECK(count_events(g, game::EventKind::Arrival) == 1 && count_events(g, game::EventKind::Meet) == 0);
-        CHECK(!person->move_dest);
-        arena::release(&g->arena);
-    }
-
-    // Auto-exit: a contained mover surfaces at its container's cell as the
-    // day's movement — and does NOT "meet" the container it just left.
-    {
-        auto* g = make_test_game(&a, 8, 3);
-        auto* w = &g->world;
-        paint_road(w, 1, 1, 6, 1);
-        game::Thing* person = spawn_bodied(w, "person", 5, 1);
-        game::Thing* home   = spawn_bodied(w, "town", 5, 1);
-        game::Thing* target = spawn_bodied(w, "town", 1, 1);
-        game_ready(g);
-        game::enter_container(&g->spatial, w, person->id, home->id);
-        game::order_move(w, person->id, target->id);
-        tick_day(g);
-        CHECK(game::is_on_map(w, person) && person->parents[0].slot == 0);
-        CHECK(person->cell_pos.x == 5 && cell_has(g, 5, 1, person->id));
-        CHECK(count_events(g, game::EventKind::Meet) == 0); // surfacing out of home is not a meeting
-        tick_day(g);
-        CHECK(person->cell_pos.x == 4);
-        arena::release(&g->arena);
-    }
 
     // Cancellations and refusals.
     {
@@ -972,27 +779,27 @@ fn b32 test_game_movement_orders() {
         game::mark_for_despawn(w, town->id);
         tick_day(g); // moves once more; the flush at tick end kills the town
         tick_day(g); // gather sees the dead dest: cancel + LOG
-        CHECK(!person->move_dest && game::is_valid(person->id));
+        CHECK(!person->move.dest && game::is_valid(person->id));
         CHECK(game::validate(g) == 0);
 
         // Unreachable dest: canceled on the first failed search.
         game::order_move(w, person->id, island->id);
         tick_day(g);
-        CHECK(!person->move_dest);
+        CHECK(!person->move.dest);
 
         // Refusals: bodiless and immobile movers never take orders.
         game::Thing* ghost = game::spawn(w);
         game::order_move(w, ghost->id, island->id);
         game::order_move(w, island->id, person->id);
-        CHECK(!ghost->move_dest && !island->move_dest);
+        CHECK(!ghost->move.dest && !island->move.dest);
 
         // The budget accumulator caps at one banked step.
         game::Thing* town2 = spawn_bodied(w, "town", 6, 1);
         game::spatial_rebuild(&g->spatial, w);
-        person->move_points = 0.9f;
+        person->move.points = 0.9f;
         game::order_move(w, person->id, town2->id);
         tick_day(g);
-        CHECK(person->move_points == 0); // capped at 1, spent by the step
+        CHECK(person->move.points == 0); // capped at 1, spent by the step
         arena::release(&g->arena);
     }
 
@@ -1000,47 +807,61 @@ fn b32 test_game_movement_orders() {
     return true;
 }
 
-fn b32 test_game_setup() {
+// The corpus test: the real data files load with zero problems, and the sim
+// survives being played blind — the player ordered somewhere via the click
+// wire, days ticked, every prompt resolved sight unseen — with the world
+// invariants holding the whole way. No names, no days, no scripted
+// journeys: editing data/ must never break this test unless the data is
+// actually broken.
+fn b32 test_game_corpus() {
     arena::Arena frame = {};
     arena::reserve(&frame, 32 * 1024 * 1024);
     auto* g = arena::allocate<game::Game>(&frame);
     game::initialize(&frame, g);
     auto* w = &g->world;
 
-    // Real data files: everything on road, references resolved, zero problems.
-    CHECK(w->world_map.width == 12 && w->world_map.height == 10);
+    CHECK(w->world_map.width > 0 && w->world_map.height > 0);
     CHECK(game::validate(g) == 0);
-    game::Id person = game::find_thing_by_name(w, "TestPerson");
-    game::Id town1  = game::find_thing_by_name(w, "Town1");
-    game::Id town2  = game::find_thing_by_name(w, "Town2");
-    CHECK((b32)person && (b32)town1 && (b32)town2);
-    CHECK(game::get(w, person)->move_dest.slot == town2.slot);
 
-    // The scripted journey: down the spur through Town1 on day 3, east along
-    // the trunk, arrival at Town2 on day 9.
-    b32   met_town1   = false;
-    usize arrival_day = 0;
-    for (usize day = 1; day <= 12 && !arrival_day; day++) {
+    // The click wire: "travel_to = { slot generation }" parses into the
+    // command that orders the player — aimed at the first bodied thing
+    // found, whoever that is.
+    game::Id dest = {};
+    for (usize slot = 1; slot <= w->high_water && !dest; slot++) {
+        const game::Thing* thing = &w->things[slot];
+        if (thing->id && !(thing->id == w->player) && thing->body_kind_idx) { dest = thing->id; }
+    }
+    if (dest && w->player) {
+        String travel_action = string::format(&frame, "travel_to = { %d %d }", (int)dest.slot, (int)dest.generation);
+        tabula::ParseResult parsed = tabula::parse(&frame, travel_action);
+        CHECK(parsed.errors.len == 0);
+        tabula::Node root     = {};
+        root.kind             = tabula::Kind::Block;
+        root.children         = parsed.roots;
+        game::Command command = game::parse_command(&root);
+        CHECK(command.kind == game::CommandKind::TravelTo && command.travel_dest == dest);
+        game::TickCommands commands = {};
+        commands.commands           = {1, &command};
+        game::tick(g, commands);
+        CHECK(game::get(w, w->player)->move.dest == dest);
+    }
+
+    // Blind play: any prompt is answered with its first enabled choice. A
+    // prompt with none would wedge the game; a resolved choice must close.
+    for (usize day = 0; day < 20; day++) {
         tick_day(g);
-        for (game::Event& event : g->events) {
-            if (event.kind == game::EventKind::Meet && event.target.slot == town1.slot) { met_town1 = day == 3; }
-            if (event.kind == game::EventKind::Arrival) { arrival_day = day; }
+        CHECK(game::validate(g) == 0);
+        if (w->interaction.active) {
+            CHECK(game::forced_pause(g));
+            u8 pick = 0;
+            for (usize i = 0; i < w->interaction.choices.len && !pick; i++) {
+                if (w->interaction.choices[i].toggle != game::ChoiceToggle::Disabled) { pick = (u8)(i + 1); }
+            }
+            CHECK(pick);
+            send_choice(g, pick);
+            CHECK(!w->interaction.active);
         }
     }
-    CHECK(met_town1 && arrival_day == 9);
-    const game::Thing* p = game::get(w, person);
-    CHECK(p->cell_pos.x == 9 && p->cell_pos.y == 5 && !p->move_dest);
-    const game::Event* arrival = first_event(g, game::EventKind::Arrival);
-    CHECK(arrival && arrival->target.slot == town2.slot);
-    CHECK(game::validate(g) == 0);
-
-    // draw_map excludes contained things — the container is their visual.
-    math::Rect visible = {0, 0, 12 * game::CELL_SIZE, 10 * game::CELL_SIZE};
-    usize      before  = game::draw_map(&frame, g, visible).items.len;
-    game::enter_container(&g->spatial, w, person, town2);
-    game::hierarchy_refresh(g);
-    usize after = game::draw_map(&frame, g, visible).items.len;
-    CHECK(after == before - 1);
     CHECK(game::validate(g) == 0);
 
     arena::release(&g->arena);
@@ -2244,9 +2065,8 @@ const Test TESTS[] = {
     {"game_hierarchy", test_game_hierarchy},
     {"game_spatial", test_game_spatial},
     {"game_pathfinding", test_game_pathfinding},
-    {"game_movement_meetings", test_game_movement_meetings},
     {"game_movement_orders", test_game_movement_orders},
-    {"game_setup", test_game_setup},
+    {"game_corpus", test_game_corpus},
     {"ui_grow", test_ui_grow},
     {"ui_compress", test_ui_compress},
     {"ui_fit", test_ui_fit},

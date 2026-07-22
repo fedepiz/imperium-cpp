@@ -2,7 +2,6 @@ entity = {
 	kind = person
 	name = "TestPerson"
 	pos = { 3 2 }
-	move_to = "Town2"
 	player = yes
 }
 
@@ -16,4 +15,12 @@ entity = {
 	kind = town
 	name = "Town2"
 	pos = { 9 5 }
+}
+
+entity = {
+	kind = person
+	name = "Wanderer"
+	pos = { 9 5 }
+	move_to = "Town1"
+	on_arrival = enter
 }
