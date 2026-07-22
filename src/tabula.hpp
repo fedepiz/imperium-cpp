@@ -400,6 +400,10 @@ fn Value get_value(const Node* node, String key) {
 // Text of the first child with this key; empty when missing or a block.
 fn String get_text(const Node* node, String key) { return get_value(node, key).text; }
 
+fn b32 get_bool(const Node* node, String key) {
+    return get_value(node, key).text == "yes";
+}
+
 // Number of the first child with this key; 0 when missing or not numeric
 // (use get_value().is_number when a real 0 must be told apart).
 fn f32 get_number(const Node* node, String key) { return get_value(node, key).number; }

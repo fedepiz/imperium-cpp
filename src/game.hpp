@@ -9,6 +9,7 @@
 #include "tabula.hpp"
 #include "ui/data.hpp"
 #include "vec.hpp"
+#include <limits>
 
 namespace game {
 using namespace arena;
@@ -74,7 +75,7 @@ struct Id {
     u16 slot;
     u16 generation;
 
-         operator b32() const;
+    operator b32() const;
     bool operator==(const Id&) const = default;
 };
 
@@ -104,14 +105,23 @@ struct BodyKind {
     // split into a gather pass and a sequential resolve pass (validate LOGs
     // anything above).
     f32 speed;
+    // Color of the item
+    math::Color color;
+    // The drawing layer
+    u8 layer;
 };
 
 // Double braces: the outer pair initializes the Array struct, the inner its
 // embedded data[] — single braces make element one claim the whole member.
 inline const Array<BodyKind, 3> BODY_KINDS = {{
     {},
-    {.name = "person", .size = 0.5f, .style = BodyShape::Circle, .speed = 1.0f},
-    {.name = "town", .size = 1.0f, .style = BodyShape::Rectangle, .speed = 0},
+    {.name  = "person",
+     .size  = 0.5f,
+     .style = BodyShape::Circle,
+     .speed = 1.0f,
+     .color = {255, 255, 0, 255},
+     .layer = 2},
+    {.name = "town", .size = 1.0f, .style = BodyShape::Rectangle, .speed = 0, .color = {200, 80, 80, 255}, .layer = 1},
 }};
 
 fn u8 lookup_body_kind(String name) {
@@ -150,6 +160,8 @@ struct Thing {
     // at 1 (max speed is one cell per day); a step costs 1; zeroed on
     // arrival/cancel.
     f32 move_points;
+    // Is this thing the player?
+    b32 is_player;
 };
 
 constexpr usize NUM_ENTITIES    = 32000;
@@ -168,10 +180,23 @@ fn usize cell_index(const WorldMap* map, CellPos pos) {
     return (usize)pos.x + (usize)map->width * (usize)pos.y;
 }
 
+enum ChoiceToggle : u8 {
+    Disabled,
+    Enabled,
+};
+
+// What resolving a choice does. One flat vocabulary across all interactions;
+// Nil resolves to nothing (the interaction just closes).
+enum class ChoiceAction : u32 {
+    Nil,
+    Meet,
+};
+
 // Interaction state
 struct Choice {
     DynString<256> text;
-    b32            enabled;
+    ChoiceAction   action;
+    ChoiceToggle   toggle;
 };
 
 struct Interaction {
@@ -179,14 +204,15 @@ struct Interaction {
     b32                   active;
     DynString<256>        title;
     DynString<2048>       description;
-    DynArray<Choice, 256> choices;
+    DynArray<Choice, 255> choices;
 };
 
-fn void add_choice(Interaction* interaction, String text, b32 enabled) {
+fn void add_choice(Interaction* interaction, String text, ChoiceAction action, ChoiceToggle toggle) {
     if (push(&interaction->choices, {})) {
-        Choice* choice  = &interaction->choices[interaction->choices.len - 1];
-        choice->text    = text;
-        choice->enabled = enabled;
+        Choice* choice = &interaction->choices[interaction->choices.len - 1];
+        choice->text   = text;
+        choice->action = action;
+        choice->toggle = toggle;
     }
 }
 
@@ -384,8 +410,8 @@ enum class EventKind : u32 {
 // stream keeps them in emission order.
 struct Event {
     EventKind kind;
-    Id        a;
-    Id        b;
+    Id        subject;
+    Id        target;
     CellPos   cell;
 };
 
@@ -993,8 +1019,8 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
             *hashtable::put(&day->fired, pair) = true;
             Event event                        = {};
             event.kind                         = EventKind::Meet;
-            event.a                            = thing->id;
-            event.b                            = other->id;
+            event.subject                      = thing->id;
+            event.target                       = other->id;
             event.cell                         = here;
             if (!push(&game->events, event) && !day->logged_full) {
                 LOG("movement: event buffer full — records dropped");
@@ -1009,11 +1035,11 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
     // target just left has not arrived.
     auto* goal_anchor = resolve_map_anchor(world, thing->move_dest);
     if (goal_anchor->id && thing->cell_pos == goal_anchor->cell_pos) {
-        Event event = {};
-        event.kind  = EventKind::Arrival;
-        event.a     = thing->id;
-        event.b     = thing->move_dest;
-        event.cell  = thing->cell_pos;
+        Event event   = {};
+        event.kind    = EventKind::Arrival;
+        event.subject = thing->id;
+        event.target  = thing->move_dest;
+        event.cell    = thing->cell_pos;
         if (!push(&game->events, event) && !day->logged_full) {
             LOG("movement: event buffer full — records dropped");
             day->logged_full = true;
@@ -1026,8 +1052,8 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
 // Placeholder consumption until the interaction system exists: the log is
 // the observer. Records stay in place for tests to inspect.
 fn void event_log(World* world, Event event) {
-    String a = resolve_name(world, get(world, event.a)->name);
-    String b = resolve_name(world, get(world, event.b)->name);
+    String a = resolve_name(world, get(world, event.subject)->name);
+    String b = resolve_name(world, get(world, event.target)->name);
     switch (event.kind) {
         case EventKind::Nil: break;
         case EventKind::Meet:
@@ -1129,24 +1155,31 @@ fn u32 validate(Game* game) {
 
 enum class CommandKind : u32 {
     Nil,
-    Choose, // pick option choice_index in the open interaction
+    Choose, // pick choice choice_index (1-based, 0 = none) in the open interaction
 };
 
 // Fat ZII payload: kind selects which fields mean anything, the rest stay
 // zero. Revisit as a union-of-structs only if the fields start colliding.
 struct Command {
     CommandKind kind;
-    i32         choice_index;
+    // 1-based choice index; 0 = none.
+    u8 choice_index;
 };
 
 // Read the sim's fields out of one action record ("choose = 2"). Absent or
-// unusable fields leave the Nil command; the first present verb wins.
+// unusable fields leave the Nil command (unusable LOGs); the first present
+// verb wins.
 fn Command parse_command(const tabula::Node* root) {
     tabula::Value choose = tabula::get_value(root, "choose");
     if (choose.is_number) {
+        i64 index = (i64)choose.number;
+        if (index < 1 || index > 255) {
+            LOG("game: choose = %d unusable (want 1..255)", (int)index);
+            return {};
+        }
         Command result      = {};
         result.kind         = CommandKind::Choose;
-        result.choice_index = (i32)choose.number;
+        result.choice_index = (u8)index;
         return result;
     }
 
@@ -1160,25 +1193,48 @@ struct TickCommands {
     usize num_days;
 };
 
-// Returns true if the game wants to be paused, with no other event happening. Ticks will use this
-// and disregard all kinds of command. The UI should act accordingly
+// Returns true if the game wants to be paused, with no other event happening. Ticks still process
+// commands while this holds, but suppress time advance. The UI should act accordingly
 fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
 
 fn void tick(Game* game, TickCommands commands) {
-    if (forced_pause(game)) { return; }
-
     World* world = &game->world;
 
     // Process the commands...
+    // The last Choose wins: at most one interaction resolves per tick.
+    // 1-based, 0 = none (ZII).
+    u8 interaction_choice_idx = 0;
     for (auto& command : commands.commands) {
         switch (command.kind) {
             case game::CommandKind::Nil: break;
-            case game::CommandKind::Choose:
-                // No interaction system yet; the log is the placeholder.
-                LOG("game: choose %d", command.choice_index);
-                break;
+            case game::CommandKind::Choose: interaction_choice_idx = command.choice_index; break;
         }
     }
+
+    if (interaction_choice_idx) {
+        Interaction* interaction = &world->interaction;
+        // Choose comes from the UI/data layer: stale or garbled input is
+        // LOGged and dropped.
+        if (!interaction->active) {
+            LOG("game: choose %d with no open interaction, dropped", interaction_choice_idx);
+        } else if (interaction_choice_idx > interaction->choices.len) {
+            LOG("game: choose %d out of range (%d choices), dropped", interaction_choice_idx,
+                (int)interaction->choices.len);
+        } else if (interaction->choices[interaction_choice_idx - 1].toggle == ChoiceToggle::Disabled) {
+            LOG("game: choose %d is disabled, dropped", interaction_choice_idx);
+        } else {
+            Choice choice = interaction->choices[interaction_choice_idx - 1];
+            switch (choice.action) {
+                case ChoiceAction::Nil: break;
+                case ChoiceAction::Meet: break; // no consequences yet
+            }
+            // Every resolved choice closes the interaction.
+            world->interaction = {};
+        }
+    }
+
+    // Post-command state: a command may have resolved the open interaction.
+    if (forced_pause(game)) { return; }
 
     // By default, we process n ticks = to the number of days, and are all considered "advances"
     usize num_ticks   = commands.num_days;
@@ -1206,13 +1262,16 @@ fn void tick(Game* game, TickCommands commands) {
 
             for (Event& event : game->events) {
                 if (event.kind == EventKind::Meet) {
-                    world->interaction.active      = true;
-                    world->interaction.title       = "Test title";
-                    world->interaction.description = "This is a test event";
+                    auto subject = get(world, event.subject);
+                    if (subject->is_player) {
+                        world->interaction.active      = true;
+                        world->interaction.title       = "Test title";
+                        world->interaction.description = "This is a test event";
 
-                    add_choice(&world->interaction, "Choice A", true);
-                    add_choice(&world->interaction, "Choice B", true);
-                    add_choice(&world->interaction, "Choice C", false);
+                        add_choice(&world->interaction, "Choice A", ChoiceAction::Meet, ChoiceToggle::Enabled);
+                        add_choice(&world->interaction, "Choice B", ChoiceAction::Meet, ChoiceToggle::Enabled);
+                        add_choice(&world->interaction, "Choice C", ChoiceAction::Meet, ChoiceToggle::Disabled);
+                    }
                 }
                 event_log(world, event);
             }
@@ -1235,16 +1294,17 @@ fn ui::data::Data extract_ui_data(Arena* arena, const Game* game) {
     }
 
     if (world->interaction.active) {
-        ui::data::bind_global(&data, "INTERACTION", "yes");
+        ui::data::bind_global(&data, "INTERACTION", true);
         ui::data::bind_global(&data, "INT_TITLE", arena::clone_string(arena, world->interaction.title));
         ui::data::bind_global(&data, "INT_TEXT", arena::clone_string(arena, world->interaction.description));
         ui::data::begin_list(&data, "choices");
         usize idx = 0;
         for (auto& choice : world->interaction.choices) {
             ui::data::begin_row(&data);
-            ui::data::bind(&data, "INDEX", string::from_int(arena, (i64)idx));
+            // 1-based on the wire ("choose = $INDEX"): 0 is the null handle.
+            ui::data::bind(&data, "INDEX", string::from_int(arena, (i64)idx + 1));
             ui::data::bind(&data, "CHOICE", arena::clone_string(arena, choice.text));
-            ui::data::bind(&data, "ENABLED", choice.enabled ? "yes" : "no");
+            ui::data::bind(&data, "ENABLED", choice.toggle != ChoiceToggle::Disabled);
             idx++;
         }
     }
@@ -1256,11 +1316,41 @@ struct MapItem {
     BodyShape   style;
     math::Rect  bounds;
     math::Color color;
+    u8          layer;
 };
 
 struct DrawMap {
     Slice<MapItem> items;
 };
+
+// draw_board_layer paints items in slice order, so ascending layer puts
+// higher layers on top. Layers are u8: a counting scatter into one bucket
+// per possible layer sorts in O(n) and is stable by construction —
+// same-layer items keep push order (terrain row-major, then things in
+// slot order).
+fn Slice<MapItem> sorted_by_layer(Arena* arena, Slice<MapItem> items) {
+    if (!items.len) { return {}; }
+
+    // start[k] becomes the output offset of layer k after the prefix sum.
+    constexpr usize limit = std::numeric_limits<u8>::max();
+
+    usize start[limit] = {};
+    for (const MapItem& item : items) {
+        start[item.layer]++;
+    }
+    usize total = 0;
+    for (usize layer = 0; layer < limit; layer++) {
+        usize count  = start[layer];
+        start[layer] = total;
+        total += count;
+    }
+
+    MapItem* sorted = arena::allocate<MapItem>(arena, items.len);
+    for (const MapItem& item : items) {
+        sorted[start[item.layer]++] = item;
+    }
+    return {items.len, sorted};
+}
 
 // Emits only the cells intersecting `visible` (the camera's view in world
 // space), so the per-frame cost is bounded by screen size, not map size.
@@ -1286,14 +1376,11 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
     auto    cell_size = math::splat(CELL_SIZE);
     for (i32 y = y0; y < y1; y++) {
         for (i32 x = x0; x < x1; x++) {
-            auto  tile         = (*map)[CellPos{x, y}];
-            auto& terrain_type = TERRAIN_TYPES[tile.terrain_type_idx];
-            auto  bounds       = math::rect_with_center_and_size({x * cell_size.x, y * cell_size.y}, cell_size);
-            auto  item         = MapItem{
-                         .style  = BodyShape::Rectangle,
-                         .bounds = bounds,
-                         .color  = terrain_type.color,
-            };
+            auto    tile         = (*map)[CellPos{x, y}];
+            auto&   terrain_type = TERRAIN_TYPES[tile.terrain_type_idx];
+            auto    bounds       = math::rect_with_center_and_size({x * cell_size.x, y * cell_size.y}, cell_size);
+            MapItem item         = {};
+            item.style = BodyShape::Rectangle, item.bounds = bounds, item.color = terrain_type.color,
             vec::push(&items, item);
         }
     }
@@ -1316,15 +1403,13 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
         // Cull by overlap, not center: a half-visible body still draws.
         auto clipped = math::intersect(visible, bounds);
         if (clipped.w <= 0 || clipped.h <= 0) { continue; }
-        MapItem item = {
-            .style  = body_kind->style,
-            .bounds = bounds,
-            .color  = {255, 255, 0, 255},
-        };
+        MapItem item = {};
+        item.style = body_kind->style, item.bounds = bounds, item.color = body_kind->color,
+        item.layer = body_kind->layer;
         vec::push(&items, item);
     }
 
-    out.items = vec::slice(items);
+    out.items = sorted_by_layer(arena, slice(items));
     return out;
 }
 
@@ -1457,6 +1542,7 @@ fn void initialize(Arena* arena, Game* game) {
             auto pos          = tabula::get(&root, "pos");
             thing->cell_pos.x = (i32)tabula::item_number(pos, 0);
             thing->cell_pos.y = (i32)tabula::item_number(pos, 1);
+            thing->is_player  = tabula::get_bool(&root, "player");
         }
     }
 

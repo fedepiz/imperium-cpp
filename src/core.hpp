@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string.h>
-using b32 = bool;
 
 using u8  = std::uint8_t;
 using u16 = std::uint16_t;
@@ -16,6 +15,11 @@ using i8  = std::int8_t;
 using i16 = std::int16_t;
 using i32 = std::int32_t;
 using i64 = std::int64_t;
+
+// "boolean" in structs — fixed size, ZII-friendly. Deliberately not bool:
+// pointer -> bool is a standard conversion, so a bool alias lets a string
+// literal silently pick a b32 overload over a String one.
+using b32 = i32;
 
 using f32 = float;
 using f64 = double;

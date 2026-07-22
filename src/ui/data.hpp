@@ -103,10 +103,20 @@ fn void bind(Data* data, String key, String value) {
     if (data->rows.len) data->rows[data->rows.len - 1].binding_count += 1;
 }
 
+fn void bind(Data* data, String key, b32 value) {
+    String text = value ? "yes" : "no";
+    bind(data, key, text);
+}
+
 // Adds a $key = value binding to the root scope: visible to every element,
 // shadowed by a row binding of the same key. Legal at any point during the
 // fill — globals live outside the row/list ranges.
 fn void bind_global(Data* data, String key, String value) { vec::push(&data->globals, Binding{key, value}); }
+
+fn void bind_global(Data* data, String key, b32 value) {
+    String text = value ? "yes" : "no";
+    bind_global(data, key, text);
+}
 
 fn void add_image(Data* data, String key, ImageId image, f32 width, f32 height) {
     vec::push(&data->images, ImageData{key, image, width, height});

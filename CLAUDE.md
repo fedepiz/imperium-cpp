@@ -399,6 +399,13 @@ metaprogramming.
   for indexing or flags.
 - Pointers and references bind to the type: `Entity* entity`, `T& value` — not
   `Entity *entity`.
+- Parameter order: the system/subject struct first (see *Fat structs*). An
+  output arena — one the result is allocated into — leads the remaining
+  parameters (`draw_map(Arena* arena, ...)`); a scratch arena trails them
+  (`movement_day_begin(Game* game, Arena* scratch)`), so an arena's position
+  says whether its memory outlives the call. One exception: a trailing
+  callable parameter (comparator, body) comes after everything, scratch
+  included — `sort::stable(slice, scratch, less)`.
 - Braces on the same line, 4-space indent, no tabs. The module namespace block
   does not add an indentation level.
 - Comments explain *why* and document non-obvious invariants (units, coordinate

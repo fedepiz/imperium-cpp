@@ -3,6 +3,7 @@ entity = {
 	name = "TestPerson"
 	pos = { 3 2 }
 	move_to = "Town2"
+	player = yes
 }
 
 entity = {

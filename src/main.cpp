@@ -195,7 +195,7 @@ fn usize time_tick(TimeState* state, f32 delta) {
 fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time, b32 forced_pause) {
     b32 paused = time->paused || forced_pause;
     ui::data::bind_global(data, "TIME_BUTTON", paused ? "Paused" : "Playing");
-    ui::data::bind_global(data, "TIME_ENABLED", forced_pause ? "no" : "yes");
+    ui::data::bind_global(data, "TIME_ENABLED", !forced_pause);
     // $HAS_PLAYER and $INTERACTION stay unbound: those panels stay hidden.
 
     // Speed buttons, one list row per level: the current level is the one
@@ -204,7 +204,7 @@ fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState*
     for (i32 level = 1; level <= MAX_SPEED; ++level) {
         ui::data::begin_row(data);
         ui::data::bind(data, "LEVEL", string::format(frame, "%d", level));
-        ui::data::bind(data, "ENABLED", (paused || time->speed == level) ? "no" : "yes");
+        ui::data::bind(data, "ENABLED", !paused && time->speed != level);
     }
 }
 

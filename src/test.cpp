@@ -8,6 +8,7 @@
 #include "list.hpp"
 #include "math.hpp"
 #include "pool.hpp"
+#include "sort.hpp"
 #include "string.hpp"
 #include "vec.hpp"
 #include "tabula.hpp"
@@ -108,6 +109,74 @@ fn b32 test_vec() {
     arena::Arena  dead   = {};
     vec::Vec<i32> broken = vec::make_vec<i32>(&dead, 16);
     CHECK(broken.len == 0 && broken.capacity == 0 && broken.data == 0); // ZII soft-fail
+
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_sort() {
+    arena::Arena a = {};
+    arena::reserve(&a, 4 * 1024 * 1024);
+    auto less_i32 = [](i32 x, i32 y) { return x < y; };
+
+    sort::stable(Slice<i32>{}, &a, less_i32); // ZII: empty slice, scratch untouched
+
+    i32 one[] = {42};
+    sort::stable(Slice<i32>{1, one}, &a, less_i32);
+    CHECK(one[0] == 42);
+
+    // Reverse input at an odd, non-power-of-two length: every merge pass runs
+    // a ragged tail, and the odd pass count exercises the copy-back.
+    constexpr usize N = 137;
+    i32* xs = arena::allocate<i32>(&a, N);
+    for (usize i = 0; i < N; ++i) xs[i] = (i32)(N - 1 - i);
+    usize used_before = a.used;
+    sort::stable(Slice<i32>{N, xs}, &a, less_i32);
+    b32 ordered = true;
+    for (usize i = 0; i < N; ++i) ordered = ordered && xs[i] == (i32)i;
+    CHECK(ordered);
+    CHECK(a.used == used_before); // watermark reclaimed the scratch buffer
+
+    // Stability: keys repeat, seq is the push order — after sorting by key
+    // alone, seq must still increase within (and across equal) keys.
+    struct Rec { u8 key; u32 seq; };
+    constexpr usize M = 100;
+    Rec* rs = arena::allocate<Rec>(&a, M);
+    for (usize i = 0; i < M; ++i) rs[i] = {(u8)(i % 3), (u32)i};
+    sort::stable(Slice<Rec>{M, rs}, &a, [](Rec x, Rec y) { return x.key < y.key; });
+    b32 stable_ok = true;
+    for (usize i = 1; i < M; ++i) {
+        b32 grouped = rs[i - 1].key <= rs[i].key;
+        b32 in_order = rs[i - 1].key < rs[i].key || rs[i - 1].seq < rs[i].seq;
+        stable_ok = stable_ok && grouped && in_order;
+    }
+    CHECK(stable_ok);
+
+    // Already-sorted input stays put (all ties resolve to the left run).
+    sort::stable(Slice<i32>{N, xs}, &a, less_i32);
+    b32 still = true;
+    for (usize i = 0; i < N; ++i) still = still && xs[i] == (i32)i;
+    CHECK(still);
+
+    // unstable (heapsort): same ordering contract on duplicate-heavy input,
+    // and truly in place — the arena watermark must not move at all.
+    sort::unstable(Slice<i32>{}, less_i32);
+    i32 lone[] = {9};
+    sort::unstable(Slice<i32>{1, lone}, less_i32);
+    CHECK(lone[0] == 9);
+    i32* ys      = arena::allocate<i32>(&a, N);
+    i64  sum_in  = 0;
+    for (usize i = 0; i < N; ++i) { ys[i] = (i32)((N - 1 - i) % 7); sum_in += ys[i]; }
+    usize used_heap = a.used;
+    sort::unstable(Slice<i32>{N, ys}, less_i32);
+    b32 ordered_heap = true;
+    i64 sum_out      = ys[0];
+    for (usize i = 1; i < N; ++i) {
+        ordered_heap = ordered_heap && ys[i - 1] <= ys[i];
+        sum_out += ys[i];
+    }
+    CHECK(ordered_heap && sum_out == sum_in); // sorted, and still a permutation
+    CHECK(a.used == used_heap);               // in place: nothing allocated
 
     arena::release(&a);
     return true;
@@ -707,7 +776,7 @@ fn b32 test_game_movement_meetings() {
         tick_day(g);
         CHECK(count_events(g, game::EventKind::Meet) == 1 && count_events(g, game::EventKind::Arrival) == 0);
         const game::Event* meet = first_event(g, game::EventKind::Meet);
-        CHECK(meet->a.slot == mover->id.slot && meet->b.slot == stander->id.slot);
+        CHECK(meet->subject.slot == mover->id.slot && meet->target.slot == stander->id.slot);
         CHECK(meet->cell.x == 2 && meet->cell.y == 1);
         tick_day(g);
         CHECK(g->events.len == 0); // walked on: the pair does not re-fire
@@ -845,8 +914,8 @@ fn b32 test_game_movement_orders() {
         CHECK(count_events(g, game::EventKind::Arrival) == 1 && count_events(g, game::EventKind::Meet) == 1);
         const game::Event* arrival = first_event(g, game::EventKind::Arrival);
         const game::Event* meet    = first_event(g, game::EventKind::Meet);
-        CHECK(arrival->a.slot == person->id.slot && arrival->b.slot == town->id.slot);
-        CHECK(meet->b.slot == town->id.slot);
+        CHECK(arrival->subject.slot == person->id.slot && arrival->target.slot == town->id.slot);
+        CHECK(meet->target.slot == town->id.slot);
         // One stream keeps emission order: the step's Meet precedes its Arrival.
         CHECK(g->events.len == 2 && g->events[0].kind == game::EventKind::Meet);
         CHECK(!person->move_dest && person->move_points == 0);
@@ -954,7 +1023,7 @@ fn b32 test_game_setup() {
     for (usize day = 1; day <= 12 && !arrival_day; day++) {
         tick_day(g);
         for (game::Event& event : g->events) {
-            if (event.kind == game::EventKind::Meet && event.b.slot == town1.slot) { met_town1 = day == 3; }
+            if (event.kind == game::EventKind::Meet && event.target.slot == town1.slot) { met_town1 = day == 3; }
             if (event.kind == game::EventKind::Arrival) { arrival_day = day; }
         }
     }
@@ -962,7 +1031,7 @@ fn b32 test_game_setup() {
     const game::Thing* p = game::get(w, person);
     CHECK(p->cell_pos.x == 9 && p->cell_pos.y == 5 && !p->move_dest);
     const game::Event* arrival = first_event(g, game::EventKind::Arrival);
-    CHECK(arrival && arrival->b.slot == town2.slot);
+    CHECK(arrival && arrival->target.slot == town2.slot);
     CHECK(game::validate(g) == 0);
 
     // draw_map excludes contained things — the container is their visual.
@@ -2161,6 +2230,7 @@ struct Test {
 const Test TESTS[] = {
     {"arena", test_arena},
     {"vec", test_vec},
+    {"sort", test_sort},
     {"dynarray", test_dynarray},
     {"dynstring", test_dynstring},
     {"list", test_list},
