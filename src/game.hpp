@@ -1174,9 +1174,9 @@ struct TickCommands {
 // and disregard all kinds of command. The UI should act accordingly
 fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
 
-// One movement day: gather intents, execute the steps against the live grid,
-// then consume the day's events.
-fn void day_tick(Game* game) {
+// Advance one day: gather movement intents, execute the steps against the
+// live grid, then consume the day's events.
+fn void day_advance(Game* game) {
     World* world = &game->world;
     world->epoch++;
     ScratchArena scratch(&game->arena);
@@ -1224,16 +1224,14 @@ fn void tick(Game* game, TickCommands commands) {
         }
     }
 
-    for (usize day = 0; day < commands.num_days; day++) {
-        day_tick(game);
-        // Mutations stop here: despawns flush and derived indexes catch up
-        // before the next day (or the frame) reads.
+    // Ticks are the sim's unit of work; a day advance is one kind of tick
+    // work. Each requested day is one advancing tick, and zero days still
+    // runs one day-less tick — per-tick work and the settle happen either way.
+    usize num_ticks = max<usize>(commands.num_days, 1);
+    for (usize tick_idx = 0; tick_idx < num_ticks; tick_idx++) {
+        if (commands.num_days) day_advance(game);
         despawn_flush(&game->spatial, world);
-        hierarchy_refresh(game);
-    }
-    // A held frame still settles: with zero days, the flush and refresh run once.
-    if (commands.num_days == 0) {
-        despawn_flush(&game->spatial, world);
+        // Mutations stop here: derived indexes catch up before anyone reads them.
         hierarchy_refresh(game);
     }
 }
