@@ -59,7 +59,7 @@ fn b32 test_arena() {
 
     String s = arena::clone_string(&a, "Roma");
     String t = arena::clone_string(&a, s);
-    CHECK(t.len == 4 && string::equals(s, t) && t.data != s.data);
+    CHECK(t.len == 4 && s == t && t.data != s.data);
 
     arena::Arena dead = {};
     CHECK(arena::allocate<u32>(&dead, 4) == 0); // ZII: zero arena allocates null, no crash
@@ -261,7 +261,6 @@ fn b32 test_string() {
     char roma[] = {'R', 'o', 'm', 'a'};
     CHECK(String(4, roma) == "Roma" && String(4, roma) != "Rome"); // bytes, not addresses
     CHECK(String("Roma") != "Rom" && String("Roma") != "Ostia" && String{} != "x");
-    CHECK(string::equals("Roma", "Roma")); // legacy spelling still routes through ==
     CHECK(String((const char*)0).len == 0); // ZII: null views as empty
 
     struct Case { const char* text; f32 value; b32 ok; };
@@ -359,12 +358,12 @@ fn b32 test_tabula() {
     CHECK(r.errors.len == 0 && r.roots.len == 7);
 
     const tabula::Node* legion = &r.roots[0];
-    CHECK(string::equals(legion->key, "legion") && legion->op == tabula::Op::Eq && legion->kind == tabula::Kind::Block);
-    CHECK(string::equals(tabula::get_text(legion, "name"), "Legio \"I\" Italica")); // escapes resolved
+    CHECK(legion->key == "legion" && legion->op == tabula::Op::Eq && legion->kind == tabula::Kind::Block);
+    CHECK(tabula::get_text(legion, "name") == "Legio \"I\" Italica"); // escapes resolved
     CHECK(tabula::get_number(legion, "strength") == 4800.0f);
     CHECK(tabula::get(legion, "morale")->op == tabula::Op::Gt);
     tabula::Value founded = tabula::get_value(legion, "founded");
-    CHECK(!founded.is_number && string::equals(founded.text, "42.3.1")); // dates stay text
+    CHECK(!founded.is_number && founded.text == "42.3.1"); // dates stay text
     CHECK(!tabula::get_value(legion, "id").is_number);                   // quoted "12" stays text
     CHECK(tabula::get_number(legion, "name") == 0.0f);                   // text atom is not a number
 
@@ -375,20 +374,20 @@ fn b32 test_tabula() {
     CHECK(tabula::item(cohorts, 3)->kind == tabula::Kind::Atom && tabula::item_value(cohorts, 3).text.len == 0);
     CHECK(tabula::item_text(tabula::item(legion, 99), 0).len == 0); // indexed chaining through nil stays safe
     CHECK(tabula::item_number(legion, 0) == 0.0f); // children[0] is the name atom: text, not a number
-    CHECK(string::equals(tabula::get_text(tabula::get(legion, "camp"), "site"), "roma")); // chained get
+    CHECK(tabula::get_text(tabula::get(legion, "camp"), "site") == "roma"); // chained get
 
     usize legions = 0; // duplicate keys: visiting all matches is a plain loop
     for (usize i = 0; i < r.roots.len; ++i) {
-        if (string::equals(r.roots[i].key, "legion")) legions += 1;
+        if (r.roots[i].key == "legion") legions += 1;
     }
-    CHECK(legions == 2 && string::equals(tabula::get_text(&r.roots[1], "name"), "Legio II"));
+    CHECK(legions == 2 && tabula::get_text(&r.roots[1], "name") == "Legio II");
 
-    CHECK(string::equals(r.roots[2].key, "anno urbis") && r.roots[2].op == tabula::Op::Le &&
+    CHECK(r.roots[2].key == "anno urbis" && r.roots[2].op == tabula::Op::Le &&
           r.roots[2].value.number == -0.5f);
     CHECK(r.roots[3].op == tabula::Op::Ne && r.roots[4].op == tabula::Op::Ge && r.roots[5].op == tabula::Op::Lt);
     const tabula::Node* block = &r.roots[6];
     CHECK(block->key.len == 0 && block->kind == tabula::Kind::Block);
-    CHECK(string::equals(block->children[0].key, "皇帝") && string::equals(block->children[0].value.text, "帝国"));
+    CHECK(block->children[0].key == "皇帝" && block->children[0].value.text == "帝国");
 
     // Missing keys: nil node chains safely and reads as zero.
     const tabula::Node* nil = tabula::get(tabula::get(legion, "missing"), "worse");
@@ -795,7 +794,7 @@ fn b32 test_game_movement_meetings() {
             tick_day(g);
             CHECK(g->events.len == 0);
             CHECK(chaser->cell_pos.x == fleer->cell_pos.x - 1); // gap stays one
-            CHECK((b32)chaser->move_dest); // the chase is still on
+            CHECK((bool)chaser->move_dest); // the chase is still on
         }
         arena::release(&g->arena);
     }
@@ -1002,21 +1001,21 @@ fn b32 test_tabula_errors() {
     tabula::ParseResult r = tabula::parse(&a, "a = 1\n= oops\nb = \"unclosed");
     CHECK(r.errors.len == 2);
     CHECK(r.errors[0].kind == tabula::ErrorKind::UnexpectedChar && r.errors[0].line == 2 && r.errors[0].col == 1);
-    CHECK(string::equals(r.errors[0].message, "2:1: unexpected character"));
+    CHECK(r.errors[0].message == "2:1: unexpected character");
     CHECK(r.errors[1].kind == tabula::ErrorKind::UnclosedString && r.errors[1].line == 3 && r.errors[1].col == 14 &&
           r.errors[1].offset == 26);
-    CHECK(string::equals(r.errors[1].message, "3:14: unclosed string"));
-    CHECK(r.roots.len == 2 && string::equals(r.roots[0].key, "a") && string::equals(r.roots[1].value.text, "oops"));
+    CHECK(r.errors[1].message == "3:14: unclosed string");
+    CHECK(r.roots.len == 2 && r.roots[0].key == "a" && r.roots[1].value.text == "oops");
 
     r = tabula::parse(&a, "a = { b = 1"); // EOF inside a block keeps the partial tree
     CHECK(r.errors.len == 1 && r.errors[0].offset == 11 && r.errors[0].col == 12);
-    CHECK(string::equals(tabula::get_text(&r.roots[0], "b"), "1"));
+    CHECK(tabula::get_text(&r.roots[0], "b") == "1");
 
     // Commas terminate the atom before erroring loudly: "8," never becomes a
     // silent non-number, and spaced elements survive recovery.
     r = tabula::parse(&a, "pos = { 8, 3 }");
     CHECK(r.errors.len == 1 && r.errors[0].kind == tabula::ErrorKind::UnexpectedComma && r.errors[0].col == 10);
-    CHECK(string::equals(r.errors[0].message, "1:10: unexpected ',' — separate with whitespace"));
+    CHECK(r.errors[0].message == "1:10: unexpected ',' — separate with whitespace");
     const tabula::Node* pos = &r.roots[0];
     CHECK(tabula::item_number(pos, 0) == 8.0f && tabula::item_number(pos, 1) == 3.0f);
 
@@ -1314,7 +1313,7 @@ fn b32 test_ui_fit() {
     {
         const L::DrawCommand* text = ui_find_kind(out, "text", L::DrawKind::Text);
         CHECK((text && text->bounds == math::Rect{5, 5, 30, 10}));
-        CHECK(string::equals(text->text, "abc"));
+        CHECK(text->text == "abc");
     }
 
     L::Engine vertical = {};
@@ -1362,8 +1361,8 @@ fn b32 test_ui_text() {
             }
         }
         CHECK(lines == 2);
-        CHECK(string::equals(line_commands[0]->text, "one"));
-        CHECK(string::equals(line_commands[1]->text, "two"));
+        CHECK(line_commands[0]->text == "one");
+        CHECK(line_commands[1]->text == "two");
         CHECK(line_commands[1]->bounds.y == 10);
     }
 
@@ -1373,9 +1372,9 @@ fn b32 test_ui_text() {
         L::add(u, {.id = "wrapped", .width = L::px(25), .text = {.text = "abcd\nef", .wrap = true}});
     });
     CHECK(out->commands.len == 3);
-    CHECK(string::equals(out->commands[0].text, "ab"));
-    CHECK(string::equals(out->commands[1].text, "cd"));
-    CHECK(string::equals(out->commands[2].text, "ef"));
+    CHECK(out->commands[0].text == "ab");
+    CHECK(out->commands[1].text == "cd");
+    CHECK(out->commands[2].text == "ef");
     CHECK(out->commands[2].bounds.y == 20);
 
     // Generational cache: a hit every frame keeps entries alive; a frame
@@ -1577,7 +1576,7 @@ fn b32 test_ui_scroll() {
                         for (const char* id : ids) {
                             L::Sense sense =
                                 L::add(u, {.id = id, .width = L::grow(), .height = L::px(50), .background = math::RED});
-                            if (string::equals(id, "row-c")) sensed = sense;
+                            if (String(id) == "row-c") sensed = sense;
                         }
                     });
     });
@@ -1704,7 +1703,7 @@ fn b32 test_ui_emit() {
                         [&](L::Ui* u) { L::add(u, {.text = {.text = {9, temporary}, .size = 10}}); });
         memset(temporary, 0, sizeof(temporary));
     }
-    CHECK(string::equals(borrow.output.commands[0].text, "temporary"));
+    CHECK(borrow.output.commands[0].text == "temporary");
 
     // Images: fit takes the source size; explicit sizes stretch; untinted
     // images default to opaque white; the background draws beneath.
@@ -1771,7 +1770,7 @@ fn b32 any_contains(Slice<String> messages, String needle) {
 // One seg of a node's text, checked against the expected (literal, var).
 fn b32 seg_is(ui::ir::Text text, usize index, String literal, String var) {
     if (index >= text.segs.len) return false;
-    return string::equals(text.segs[index].literal, literal) && string::equals(text.segs[index].var, var);
+    return text.segs[index].literal == literal && text.segs[index].var == var;
 }
 
 fn b32 test_ui_style() {
@@ -1992,8 +1991,8 @@ fn b32 test_ui_ir() {
     D::bind(&data, "B", "row");
     D::Row row = D::rows(&data, data.lists[0])[0];
     CHECK(D::bindings(&data, row).len == 2 && data.globals.len == 1);
-    CHECK(string::equals(data.globals[0].key, "STATUS"));
-    CHECK(string::equals(data.globals[0].value, "Year 700"));
+    CHECK(data.globals[0].key == "STATUS");
+    CHECK(data.globals[0].value == "Year 700");
 
     arena::release(&a);
     return true;
@@ -2051,12 +2050,12 @@ fn b32 test_ui_run() {
     CHECK(click_at(&module, &people, 0, 0, false).len == 0);
     {
         Slice<String> events = click_at(&module, &people, 50, 25, true);
-        CHECK(events.len == 1 && string::equals(events[0], "print OK"));
+        CHECK(events.len == 1 && events[0] == "print OK");
     }
     CHECK(click_at(&module, &people, 50, 60, true).len == 0);
     {
         Slice<String> events = click_at(&module, &people, 50, 95, true);
-        CHECK(events.len == 1 && string::equals(events[0], "hire 7"));
+        CHECK(events.len == 1 && events[0] == "hire 7");
     }
 
     // Hidden nodes are not declared: the conditional button only exists
@@ -2079,7 +2078,7 @@ fn b32 test_ui_run() {
     CHECK(click_at(&conditional, &open, 0, 0, false).len == 0);
     {
         Slice<String> events = click_at(&conditional, &open, 50, 25, true);
-        CHECK(events.len == 1 && string::equals(events[0], "maybe"));
+        CHECK(events.len == 1 && events[0] == "maybe");
     }
 
     // Disabled buttons occupy their slot but sense nothing; unbound
@@ -2103,7 +2102,7 @@ fn b32 test_ui_run() {
     CHECK(click_at(&gated, &on, 50, 25, false).len == 0);
     {
         Slice<String> events = click_at(&gated, &on, 50, 25, true);
-        CHECK(events.len == 1 && string::equals(events[0], "press"));
+        CHECK(events.len == 1 && events[0] == "press");
     }
     return true;
 }

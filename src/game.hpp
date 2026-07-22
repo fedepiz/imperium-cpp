@@ -36,6 +36,14 @@ inline const Array<TerrainType, 3> TERRAIN_TYPES = {{
     {.name = "Road", .color = {148, 124, 88, 255}, .sigil = '#', .passable = true},
 }};
 
+// Terrain index for a map sigil; 0 (Water) when the sigil is unknown.
+fn u8 lookup_terrain(char sigil) {
+    for (u8 idx = 0; idx < TERRAIN_TYPES.len(); ++idx) {
+        if (TERRAIN_TYPES[idx].sigil == sigil) { return idx; }
+    }
+    return 0;
+}
+
 struct WorldCell {
     u8 terrain_type_idx;
 };
@@ -74,13 +82,13 @@ struct Id {
     u16 slot;
     u16 generation;
 
-         operator b32() const;
-    bool operator==(const Id&) const = default;
+    explicit operator bool() const;
+    bool     operator==(const Id&) const = default;
 };
 
 fn b32 is_valid(Id id) { return id.slot != 0 && id.generation % 2 == 1; }
 
-fn Id::operator b32() const { return is_valid(*this); }
+fn Id::operator bool() const { return is_valid(*this); }
 
 struct Name {
     usize offset;
@@ -454,9 +462,9 @@ fn void hierarchy_refresh(Game* game) {
 
         memset(&index->row_start, 0, sizeof(index->row_start));
         for (usize slot = 1; slot <= world->high_water; slot++) {
-            const Thing& thing = world->things[slot];
-            if (!thing.id) { continue; }
-            const Thing* parent = get_parent(world, &thing, (Hierarchy)h);
+            const Thing* thing = &world->things[slot];
+            if (!thing->id) { continue; }
+            const Thing* parent = get_parent(world, thing, (Hierarchy)h);
             if (!parent->id) { continue; }
             index->row_start[(usize)parent->id.slot + 1] += 1;
         }
@@ -466,9 +474,9 @@ fn void hierarchy_refresh(Game* game) {
 
         game->cursor = index->row_start;
         for (usize slot = 1; slot <= world->high_water; slot++) {
-            const Thing& thing = world->things[slot];
-            if (!thing.id) { continue; }
-            const Thing* parent = get_parent(world, &thing, (Hierarchy)h);
+            const Thing* thing = &world->things[slot];
+            if (!thing->id) { continue; }
+            const Thing* parent = get_parent(world, thing, (Hierarchy)h);
             if (!parent->id) { continue; }
             index->children[game->cursor[parent->id.slot]++] = (u16)slot;
         }
@@ -753,7 +761,7 @@ struct NextHop {
 // whole journey and every follower on the same road. Unreachable, unwalkable
 // endpoints, or a missing grid return found == false — the caller cancels.
 fn NextHop route_next_hop(SpatialMap* spatial, const WorldMap* map, CellPos from, CellPos dest) {
-    ASSERT(!(from == dest));
+    ASSERT(from != dest);
     if (!spatial->bfs_came_from || !in_bounds(map, from) || !in_bounds(map, dest)) return {};
 
     u64 key = pack_route_key(from, dest);
@@ -828,6 +836,12 @@ fn u64 pack_pair(u16 a, u16 b) {
     return ((u64)min(a, b) << 16) | (u64)max(a, b);
 }
 
+// Cancel or complete an order: the move fields return to their zero state.
+fn void order_clear(Thing* thing) {
+    thing->move_dest   = {};
+    thing->move_points = 0;
+}
+
 // Issue a move order. LOG + refuse movers that can never walk (dead, dummy,
 // bodiless, immobile body). The dest's liveness is only enforced at tick time
 // — it can despawn later anyway. dest = {} clears the order.
@@ -838,8 +852,7 @@ fn void order_move(World* world, Id mover, Id dest) {
         return;
     }
     if (!dest) {
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        order_clear(thing);
         return;
     }
     String name = resolve_name(world, thing->name);
@@ -872,16 +885,14 @@ fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
     if (!get(world, thing->move_dest)->id) {
         String name = resolve_name(world, thing->name);
         LOG("move: destination of '%.*s' is gone — order canceled", (int)name.len, name.data);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        order_clear(thing);
         return {};
     }
     Thing* goal_anchor = resolve_map_anchor(world, thing->move_dest);
     if (!goal_anchor->id) {
         String name = resolve_name(world, thing->name);
         LOG("move: destination of '%.*s' is nowhere on the map — order canceled", (int)name.len, name.data);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        order_clear(thing);
         return {};
     }
     CellPos goal = goal_anchor->cell_pos;
@@ -896,25 +907,24 @@ fn MoveIntent movement_intent(SpatialMap* spatial, World* world, Thing* thing) {
             thing->move_points = 0;
             return {};
         }
-        return {thing->id.slot, anchor->cell_pos, true};
+        return {.slot = thing->id.slot, .to = anchor->cell_pos, .is_exit = true};
     }
 
     thing->move_points = min(thing->move_points + BODY_KINDS[thing->body_kind_idx].speed, 1.0f);
     if (thing->move_points < 1.0f) return {};
 
     if (thing->cell_pos == goal) {
-        return {thing->id.slot, thing->cell_pos, false}; // zero-length arrival
+        return {.slot = thing->id.slot, .to = thing->cell_pos}; // zero-length arrival
     }
     NextHop hop = route_next_hop(spatial, &world->world_map, thing->cell_pos, goal);
     if (!hop.found) {
         String name = resolve_name(world, thing->name);
         LOG("move: no road takes '%.*s' from %d,%d to %d,%d — order canceled", (int)name.len, name.data,
             thing->cell_pos.x, thing->cell_pos.y, goal.x, goal.y);
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        order_clear(thing);
         return {};
     }
-    return {thing->id.slot, hop.cell, false};
+    return {.slot = thing->id.slot, .to = hop.cell};
 }
 
 // Day-scoped state for the step loop. Firing rules: at most once per pair per
@@ -947,6 +957,14 @@ fn MoveDay movement_day_begin(Game* game, Arena* scratch) {
     return day;
 }
 
+// Push one movement event; a full buffer drops the record and logs once per day.
+fn void event_emit(Game* game, MoveDay* day, Event event) {
+    if (!push(&game->events, event) && !day->logged_full) {
+        LOG("movement: event buffer full — records dropped");
+        day->logged_full = true;
+    }
+}
+
 // The sequential half: execute one intent against the live grid, so every
 // encounter check reads true current positions. Step order is slot order —
 // the deterministic tiebreak for genuine races. (An equal-speed chase never
@@ -969,12 +987,11 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
         // the outermost container, not the direct parent).
         exited_from = resolve_map_anchor(world, thing->id)->id;
         if (!exit_to_map(spatial, world, thing)) {
-            thing->move_dest   = {};
-            thing->move_points = 0;
+            order_clear(thing);
             return;
         }
         stepped = true;
-    } else if (!(intent.to == thing->cell_pos)) {
+    } else if (intent.to != thing->cell_pos) {
         move_thing(spatial, &world->world_map, thing, intent.to);
         thing->move_points -= 1.0f;
         stepped = true;
@@ -991,15 +1008,12 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
             u64 pair = pack_pair(thing->id.slot, other->id.slot);
             if (hashtable::get(&day->together, pair) || hashtable::get(&day->fired, pair)) continue;
             *hashtable::put(&day->fired, pair) = true;
-            Event event                        = {};
-            event.kind                         = EventKind::Meet;
-            event.a                            = thing->id;
-            event.b                            = other->id;
-            event.cell                         = here;
-            if (!push(&game->events, event) && !day->logged_full) {
-                LOG("movement: event buffer full — records dropped");
-                day->logged_full = true;
-            }
+            Event event = {};
+            event.kind  = EventKind::Meet;
+            event.a     = thing->id;
+            event.b     = other->id;
+            event.cell  = here;
+            event_emit(game, day, event);
         }
     }
 
@@ -1014,12 +1028,8 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
         event.a     = thing->id;
         event.b     = thing->move_dest;
         event.cell  = thing->cell_pos;
-        if (!push(&game->events, event) && !day->logged_full) {
-            LOG("movement: event buffer full — records dropped");
-            day->logged_full = true;
-        }
-        thing->move_dest   = {};
-        thing->move_points = 0;
+        event_emit(game, day, event);
+        order_clear(thing);
     }
 }
 
@@ -1164,6 +1174,40 @@ struct TickCommands {
 // and disregard all kinds of command. The UI should act accordingly
 fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
 
+// One movement day: gather intents, execute the steps against the live grid,
+// then consume the day's events.
+fn void day_tick(Game* game) {
+    World* world = &game->world;
+    world->epoch++;
+    ScratchArena scratch(&game->arena);
+
+    auto intents = vec::make_vec<MoveIntent>(&game->arena, 64);
+    for (usize slot = 1; slot <= world->high_water; slot++) {
+        Thing* thing = &world->things[slot];
+        if (!thing->id || !thing->move_dest) continue;
+        MoveIntent intent = movement_intent(&game->spatial, world, thing);
+        if (intent.slot) vec::push(&intents, intent);
+    }
+
+    MoveDay day = movement_day_begin(game, &game->arena);
+    for (MoveIntent& intent : vec::slice(intents)) {
+        movement_step(game, &day, intent);
+    }
+
+    for (Event& event : game->events) {
+        if (event.kind == EventKind::Meet) {
+            world->interaction.active      = true;
+            world->interaction.title       = "Test title";
+            world->interaction.description = "This is a test event";
+
+            add_choice(&world->interaction, "Choice A", true);
+            add_choice(&world->interaction, "Choice B", true);
+            add_choice(&world->interaction, "Choice C", false);
+        }
+        event_log(world, event);
+    }
+}
+
 fn void tick(Game* game, TickCommands commands) {
     if (forced_pause(game)) { return; }
 
@@ -1180,47 +1224,16 @@ fn void tick(Game* game, TickCommands commands) {
         }
     }
 
-    // By default, we process n ticks = to the number of days, and are all considered "advances"
-    usize num_ticks   = commands.num_days;
-    b32   advance_day = num_ticks > 0;
-    num_ticks         = max<usize>(num_ticks, 1);
-
-    for (usize tick_idx = 0; tick_idx < num_ticks; tick_idx++) {
-        if (advance_day) {
-            world->epoch++;
-            ScratchArena scratch(&game->arena);
-
-            auto intents = vec::make_vec<MoveIntent>(&game->arena, 64);
-
-            for (usize slot = 1; slot <= world->high_water; slot++) {
-                Thing* thing = &world->things[slot];
-                if (!thing->id || !thing->move_dest) continue;
-                MoveIntent intent = movement_intent(&game->spatial, world, thing);
-                if (intent.slot) vec::push(&intents, intent);
-            }
-
-            MoveDay day = movement_day_begin(game, &game->arena);
-            for (MoveIntent& intent : vec::slice(intents)) {
-                movement_step(game, &day, intent);
-            }
-
-            for (Event& event : game->events) {
-                if (event.kind == EventKind::Meet) {
-                    world->interaction.active      = true;
-                    world->interaction.title       = "Test title";
-                    world->interaction.description = "This is a test event";
-
-                    add_choice(&world->interaction, "Choice A", true);
-                    add_choice(&world->interaction, "Choice B", true);
-                    add_choice(&world->interaction, "Choice C", false);
-                }
-                event_log(world, event);
-            }
-        }
-
+    for (usize day = 0; day < commands.num_days; day++) {
+        day_tick(game);
+        // Mutations stop here: despawns flush and derived indexes catch up
+        // before the next day (or the frame) reads.
         despawn_flush(&game->spatial, world);
-
-        // Mutations stop here: derived indexes catch up before anyone reads them.
+        hierarchy_refresh(game);
+    }
+    // A held frame still settles: with zero days, the flush and refresh run once.
+    if (commands.num_days == 0) {
+        despawn_flush(&game->spatial, world);
         hierarchy_refresh(game);
     }
 }
@@ -1230,7 +1243,7 @@ fn ui::data::Data extract_ui_data(Arena* arena, const Game* game) {
     auto         data  = ui::data::make(arena);
 
     {
-        auto date = string::format(arena, "Year %d", world->epoch);
+        auto date = string::format(arena, "Year %d", (int)world->epoch);
         ui::data::bind_global(&data, "DATE", date);
     }
 
@@ -1301,17 +1314,17 @@ fn DrawMap draw_map(Arena* arena, const Game* game, math::Rect visible) {
     // (For now done here, later cache?)
     // Traverse all entities and draw the visible ones
     for (usize slot = 1; slot <= world->high_water; slot++) {
-        const Thing& thing = world->things[slot];
+        const Thing* thing = &world->things[slot];
         // Dead slots keep their old fields until reuse — parity filters them.
-        if (!thing.id) { continue; }
+        if (!thing->id) { continue; }
         // Contained things don't draw — the container is their visual.
-        if (get_parent(world, &thing, Hierarchy::LocationOf)->id) { continue; }
-        const auto* body_kind = &BODY_KINDS[thing.body_kind_idx];
+        if (get_parent(world, thing, Hierarchy::LocationOf)->id) { continue; }
+        const auto* body_kind = &BODY_KINDS[thing->body_kind_idx];
         if (body_kind->size <= 0.0) { continue; }
 
         math::V2 size = math::splat(CELL_SIZE * body_kind->size);
 
-        math::V2 pos    = {thing.cell_pos.x * cell_size.x, thing.cell_pos.y * cell_size.y};
+        math::V2 pos    = {thing->cell_pos.x * cell_size.x, thing->cell_pos.y * cell_size.y};
         auto     bounds = math::rect_with_center_and_size(pos, size);
         // Cull by overlap, not center: a half-visible body still draws.
         auto clipped = math::intersect(visible, bounds);
@@ -1392,16 +1405,8 @@ fn void load_world_map(Arena* arena, String path, WorldMap* world_map) {
             continue;
         }
         if ((usize)x < width && (usize)y < height) {
-            u8  idx   = 0;
-            b32 found = false;
-            for (usize t = 0; t < TERRAIN_TYPES.len(); t++) {
-                if (TERRAIN_TYPES[t].sigil == c) {
-                    idx   = (u8)t;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found && !logged_unknown) {
+            u8 idx = lookup_terrain(c);
+            if (TERRAIN_TYPES[idx].sigil != c && !logged_unknown) {
                 LOG("map: unknown sigil '%c' at %d,%d — cells left as %.*s", c, x, y, (int)TERRAIN_TYPES[0].name.len,
                     TERRAIN_TYPES[0].name.data);
                 logged_unknown = true;

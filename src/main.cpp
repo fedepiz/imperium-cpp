@@ -93,7 +93,7 @@ struct MovingCamera {
 
 // The keyboard's contribution to the frame: one Command merging everything
 // the keys say (fat struct — the unrelated fields coexist).
-fn void key_input(vec::Vec<Command>* out) {
+fn Command key_input() {
     Command command = {};
     if (ray::key_pressed(ray::Key::R)) command.reload_ui = true;
     if (ray::key_pressed(ray::Key::Space)) command.time.toggle_pause = true;
@@ -103,7 +103,7 @@ fn void key_input(vec::Vec<Command>* out) {
     if (ray::key_down(ray::Key::Right) || ray::key_down(ray::Key::D)) dir.x += 1;
     if (ray::key_down(ray::Key::Up) || ray::key_down(ray::Key::W)) dir.y -= 1;
     if (ray::key_down(ray::Key::Down) || ray::key_down(ray::Key::S)) dir.y += 1;
-    f32 dir_len = sqrtf(dir.x * dir.x + dir.y * dir.y);
+    f32 dir_len = math::length(dir);
     if (dir_len > 0) { // normalize so diagonals aren't faster
         dir.x /= dir_len;
         dir.y /= dir_len;
@@ -115,7 +115,7 @@ fn void key_input(vec::Vec<Command>* out) {
         if (ray::key_pressed(key)) { command.time.set_speed = speed; }
     }
 
-    vec::push(out, command);
+    return command;
 }
 
 // dir is the frame's pan intent; smoothing turns it into velocity. Must run
@@ -237,8 +237,7 @@ fn Command parse_command(arena::Arena* frame, String action) {
 // order with nested clip regions; ray's scissor doesn't nest, so the stack
 // lives here and each ClipStart sets the running intersection.
 fn void render_ui_commands(Slice<ui::DrawCommand> commands, ray::FontId font) {
-    Array<math::Rect, 16> clip_stack = {};
-    usize                 clip_count = 0;
+    DynArray<math::Rect, 16> clip_stack = {};
     for (const ui::DrawCommand& command : commands) {
         switch (command.kind) {
             case ui::DrawKind::Rectangle: ray::fill_rect(command.bounds, command.color, command.corner_radius); break;
@@ -260,16 +259,15 @@ fn void render_ui_commands(Slice<ui::DrawCommand> commands, ray::FontId font) {
                 break;
             case ui::DrawKind::ClipStart: {
                 math::Rect clip =
-                    clip_count ? math::intersect(clip_stack[clip_count - 1], command.bounds) : command.bounds;
-                ASSERT(clip_count < 16);
-                clip_stack[clip_count] = clip;
-                clip_count += 1;
+                    clip_stack.len ? math::intersect(clip_stack[clip_stack.len - 1], command.bounds) : command.bounds;
+                b32 pushed = push(&clip_stack, clip);
+                ASSERT(pushed);
                 ray::clip_begin(clip);
             } break;
             case ui::DrawKind::ClipEnd:
-                if (clip_count) clip_count -= 1;
-                if (clip_count) {
-                    ray::clip_begin(clip_stack[clip_count - 1]);
+                if (clip_stack.len) pop(&clip_stack);
+                if (clip_stack.len) {
+                    ray::clip_begin(clip_stack[clip_stack.len - 1]);
                 } else {
                     ray::clip_end();
                 }
@@ -311,7 +309,7 @@ int main() {
         arena::reset(&frame_arena);
 
         auto commands = vec::make_vec<Command>(&frame_arena, 256);
-        key_input(&commands);
+        vec::push(&commands, key_input());
 
         // Last tick's verdict: an open interaction holds time for the whole
         // frame — the UI shows the hold, and the delta below zeroes out.
@@ -340,13 +338,15 @@ int main() {
 
         auto game_commands = vec::make_vec<game::Command>(&frame_arena, 8);
 
+        math::V2 pan = {};
         for (const auto& command : commands) {
             if (command.log_msg.len) LOG("command: %.*s", (int)command.log_msg.len, command.log_msg.data);
             if (command.reload_ui) load_ui(&hud);
             time_update(&time, command.time);
-            camera_update(&camera, command.camera_move, ray::frame_time());
+            pan = pan + command.camera_move;
             if (command.game.kind != game::CommandKind::Nil) vec::push(&game_commands, command.game);
         }
+        camera_update(&camera, pan, ray::frame_time());
 
         // After camera_update, so the culling rect is this frame's view.
         math::V2 screen_size  = {(f32)config.screen_width, (f32)config.screen_height};

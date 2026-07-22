@@ -240,7 +240,7 @@ u32 panel(Compiler* c, const tabula::Node* src, String path, b32 top_level);
 
 fn b32 key_in(String key, const char* const* names, usize count) {
     for (usize i = 0; i < count; ++i) {
-        if (string::equals(key, names[i])) return true;
+        if (key == names[i]) return true;
     }
     return false;
 }
@@ -269,7 +269,7 @@ fn void check_keys(Compiler* c, const tabula::Node* src, String path, const char
                    b32 allow_elements, const char* const* extra = 0, usize extra_count = 0) {
     for (const tabula::Node& child : src->children) {
         b32 known = key_in(child.key, props, prop_count) || (extra && key_in(child.key, extra, extra_count)) ||
-                    (allow_elements && key_in(child.key, ELEMENT_KEYS, sizeof(ELEMENT_KEYS) / sizeof(ELEMENT_KEYS[0])));
+                    (allow_elements && key_in(child.key, ELEMENT_KEYS, countof(ELEMENT_KEYS)));
         if (!known) warn_misplaced(c, &child, path);
     }
 }
@@ -332,7 +332,7 @@ fn Text text(Compiler* c, String source) {
 // condition off forever — warn instead.
 fn Text condition(Compiler* c, const tabula::Node* src, const char* key, String path) {
     String value = tabula::get_text(src, key);
-    if (value.len && !string::equals(value, "yes") && !string::equals(value, "no") && !contains_dollar(value)) {
+    if (value.len && value != "yes" && value != "no" && !contains_dollar(value)) {
         warn(c, string::format(c->arena, "%.*s: '%s = %.*s' is not yes/no or a $VAR binding", (int)path.len,
                                path.data, key, (int)value.len, value.data));
     }
@@ -343,8 +343,8 @@ fn b32 yes(Compiler* c, const tabula::Node* src, const char* key, String path) {
     const tabula::Node* node = tabula::get(src, key);
     if (!node->key.len) return false;
     String value = node->value.text;
-    if (string::equals(value, "yes")) return true;
-    if (string::equals(value, "no")) return false;
+    if (value == "yes") return true;
+    if (value == "no") return false;
     warn(c, string::format(c->arena, "%.*s: '%s = %.*s' is not yes/no", (int)path.len, path.data, key,
                            (int)value.len, value.data));
     return false;
@@ -352,8 +352,8 @@ fn b32 yes(Compiler* c, const tabula::Node* src, const char* key, String path) {
 
 fn Direction direction(Compiler* c, const tabula::Node* src, String path) {
     String value = tabula::get_text(src, "direction");
-    if (!value.len || string::equals(value, "vertical")) return Direction::TopToBottom;
-    if (string::equals(value, "horizontal")) return Direction::LeftToRight;
+    if (!value.len || value == "vertical") return Direction::TopToBottom;
+    if (value == "horizontal") return Direction::LeftToRight;
     warn(c, string::format(c->arena, "%.*s: 'direction = %.*s' is not vertical/horizontal", (int)path.len, path.data,
                            (int)value.len, value.data));
     return Direction::TopToBottom;
@@ -409,9 +409,9 @@ fn SizeResult size(Compiler* c, const tabula::Node* src, const char* key, String
     }
 
     Size result = {};
-    if (string::equals(cap_text, "grow")) {
+    if (cap_text == "grow") {
         result = GROW;
-    } else if (string::equals(cap_text, "fit")) {
+    } else if (cap_text == "fit") {
         if (has_weight && weight != 0) {
             warn(c, string::format(c->arena, "%.*s: '%s = %.*s' — fit means weight 0; drop the weight or use a cap",
                                    (int)path.len, path.data, key, (int)full.len, full.data));
@@ -477,13 +477,13 @@ fn void container(Compiler* c, const tabula::Node* src, String path, UiNode* nod
         const tabula::Node* align = tabula::get(src, "align");
         if (align->key.len) {
             String value = align->value.text;
-            if (string::equals(value, "start")) {
+            if (value == "start") {
                 node->align_x = Align::Start;
                 node->align_y = Align::Start;
-            } else if (string::equals(value, "center")) {
+            } else if (value == "center") {
                 node->align_x = Align::Center;
                 node->align_y = Align::Center;
-            } else if (string::equals(value, "end")) {
+            } else if (value == "end") {
                 node->align_x = Align::End;
                 node->align_y = Align::End;
             } else {
@@ -523,7 +523,7 @@ fn u32 block(Compiler* c, const tabula::Node* src, String path, const char* name
 fn u32 nested_panel(Compiler* c, const tabula::Node* src, String path) { return panel(c, src, path, false); }
 
 fn u32 row(Compiler* c, const tabula::Node* src, String path) {
-    check_keys(c, src, path, CONTAINER_PROPS, sizeof(CONTAINER_PROPS) / sizeof(CONTAINER_PROPS[0]), true);
+    check_keys(c, src, path, CONTAINER_PROPS, countof(CONTAINER_PROPS), true);
     // A row is a panel with different defaults: horizontal, transparent, no
     // padding. Pure compile-time sugar — the walk never knows.
     UiNode node        = {};
@@ -541,7 +541,7 @@ fn u32 row(Compiler* c, const tabula::Node* src, String path) {
 // A box is a pre-styled cell: it fills its slot, centers its content and
 // gets the accent background. Pure compile-time sugar.
 fn u32 boxed(Compiler* c, const tabula::Node* src, String path) {
-    check_keys(c, src, path, CONTAINER_PROPS, sizeof(CONTAINER_PROPS) / sizeof(CONTAINER_PROPS[0]), true);
+    check_keys(c, src, path, CONTAINER_PROPS, countof(CONTAINER_PROPS), true);
     UiNode node        = {};
     node.direction     = Direction::TopToBottom;
     node.width         = GROW;
@@ -563,10 +563,10 @@ fn u32 boxed(Compiler* c, const tabula::Node* src, String path) {
 fn u32 label(Compiler* c, const tabula::Node* src, String path) {
     u16   role_size  = c->style.text_size;
     Color role_color = c->style.palette.ink;
-    if (string::equals(src->key, "heading")) {
+    if (src->key == "heading") {
         role_size  = c->style.heading_size;
         role_color = c->style.palette.ink;
-    } else if (string::equals(src->key, "section")) {
+    } else if (src->key == "section") {
         role_size  = c->style.section_size;
         role_color = c->style.palette.muted;
     }
@@ -574,7 +574,7 @@ fn u32 label(Compiler* c, const tabula::Node* src, String path) {
     if (src->kind == tabula::Kind::Block) {
         String block_path = string::format(c->arena, "%.*s > %.*s", (int)path.len, path.data, (int)src->key.len,
                                            src->key.data);
-        check_keys(c, src, block_path, LABEL_PROPS, sizeof(LABEL_PROPS) / sizeof(LABEL_PROPS[0]), false);
+        check_keys(c, src, block_path, LABEL_PROPS, countof(LABEL_PROPS), false);
         node.id        = text(c, tabula::get_text(src, "id"));
         node.text      = text(c, tabula::get_text(src, "text"));
         node.text_size = tabula::get(src, "size")->key.len ? (u16)number_or(src, "size", role_size) : role_size;
@@ -597,7 +597,7 @@ fn u32 label(Compiler* c, const tabula::Node* src, String path) {
 }
 
 fn u32 button(Compiler* c, const tabula::Node* src, String path) {
-    check_keys(c, src, path, BUTTON_PROPS, sizeof(BUTTON_PROPS) / sizeof(BUTTON_PROPS[0]), false);
+    check_keys(c, src, path, BUTTON_PROPS, countof(BUTTON_PROPS), false);
     Text caption = text(c, tabula::get_text(src, "text"));
     // Unsized buttons grow into the style's default caps.
     UiNode node = {};
@@ -635,7 +635,7 @@ fn u32 button(Compiler* c, const tabula::Node* src, String path) {
 }
 
 fn u32 image(Compiler* c, const tabula::Node* src, String path) {
-    check_keys(c, src, path, IMAGE_PROPS, sizeof(IMAGE_PROPS) / sizeof(IMAGE_PROPS[0]), false);
+    check_keys(c, src, path, IMAGE_PROPS, countof(IMAGE_PROPS), false);
     if (!tabula::get(src, "source")->key.len) {
         warn(c, string::format(c->arena, "%.*s: image without a 'source' draws nothing", (int)path.len, path.data));
     }
@@ -661,7 +661,7 @@ fn u32 image(Compiler* c, const tabula::Node* src, String path) {
 }
 
 fn u32 list(Compiler* c, const tabula::Node* src, String path) {
-    check_keys(c, src, path, CONTAINER_PROPS, sizeof(CONTAINER_PROPS) / sizeof(CONTAINER_PROPS[0]), false,
+    check_keys(c, src, path, CONTAINER_PROPS, countof(CONTAINER_PROPS), false,
                TEMPLATE_EXTRA, 1);
     UiNode node        = {};
     node.direction     = Direction::TopToBottom;
@@ -693,7 +693,7 @@ fn u32 list(Compiler* c, const tabula::Node* src, String path) {
 }
 
 fn u32 panel(Compiler* c, const tabula::Node* src, String path, b32 top_level) {
-    check_keys(c, src, path, CONTAINER_PROPS, sizeof(CONTAINER_PROPS) / sizeof(CONTAINER_PROPS[0]), true);
+    check_keys(c, src, path, CONTAINER_PROPS, countof(CONTAINER_PROPS), true);
     UiNode node = {};
     // Unlike rows, panels stack vertically unless told otherwise.
     node.direction     = Direction::TopToBottom;
@@ -719,14 +719,14 @@ fn u32 elements(Compiler* c, const tabula::Node* src, String path) {
     u32 last  = 0;
     for (const tabula::Node& child : src->children) {
         u32 index = 0;
-        if (string::equals(child.key, "panel")) index = block(c, &child, path, "panel", nested_panel);
-        else if (string::equals(child.key, "row")) index = block(c, &child, path, "row", row);
-        else if (string::equals(child.key, "box")) index = block(c, &child, path, "box", boxed);
-        else if (string::equals(child.key, "label") || string::equals(child.key, "heading") ||
-                 string::equals(child.key, "section")) index = label(c, &child, path);
-        else if (string::equals(child.key, "button")) index = block(c, &child, path, "button", button);
-        else if (string::equals(child.key, "image")) index = block(c, &child, path, "image", image);
-        else if (string::equals(child.key, "list")) index = block(c, &child, path, "list", list);
+        if (child.key == "panel") index = block(c, &child, path, "panel", nested_panel);
+        else if (child.key == "row") index = block(c, &child, path, "row", row);
+        else if (child.key == "box") index = block(c, &child, path, "box", boxed);
+        else if (child.key == "label" || child.key == "heading" ||
+                 child.key == "section") index = label(c, &child, path);
+        else if (child.key == "button") index = block(c, &child, path, "button", button);
+        else if (child.key == "image") index = block(c, &child, path, "image", image);
+        else if (child.key == "list") index = block(c, &child, path, "list", list);
         if (index == 0) continue;
         if (first == 0) {
             first = index;
@@ -764,7 +764,7 @@ fn UiModule compile(arena::Arena* arena, String source, const style::Style* styl
     for (usize index = 0; index < parsed.roots.len; ++index) {
         const tabula::Node* root = &parsed.roots[index];
         String path = string::format(arena, "panel #%u", (u32)(index + 1));
-        if (!string::equals(root->key, "panel") || root->kind != tabula::Kind::Block) {
+        if (root->key != "panel" || root->kind != tabula::Kind::Block) {
             warn_misplaced(&c, root, "top level");
             continue;
         }

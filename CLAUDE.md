@@ -381,7 +381,11 @@ metaprogramming.
   wrap one side in `String`. Decided exception: a view type whose range-for
   needs an iterator shim (`game::ChildrenView` — dense u16 slots resolved to
   `Thing*` on the fly) may define a nested `Iter` with `*`, `++`, `!=` —
-  those three, nothing more, and only in service of `begin`/`end`.
+  those three, nothing more, and only in service of `begin`/`end`. Decided
+  exception: a generational handle (`game::Id`) defines `explicit operator
+  bool` as its liveness test — `if (!thing->id)` is the ZII zero test spelled
+  as an idiom. Always `explicit`, and only to `bool`: a handle must never
+  silently convert to an integer.
 
 ## Naming and formatting
 

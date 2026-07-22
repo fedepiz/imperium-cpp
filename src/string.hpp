@@ -29,6 +29,7 @@ fn bool is_digit(char c) { return c >= '0' && c <= '9'; }
 // printf-style formatting into an arena string. String arguments go through
 // the length-prefix idiom: format(a, "%.*s!", (int)s.len, s.data). The
 // two-pass vsnprintf measures first, so the result is never truncated.
+__attribute__((format(printf, 2, 3)))
 fn String format(arena::Arena* arena, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -51,10 +52,6 @@ fn String format(arena::Arena* arena, const char* fmt, ...) {
 // Arena-backed on purpose: callers routinely hand the result to code that
 // stores String views (ui::data), so a stack buffer here would dangle.
 fn String from_int(arena::Arena* arena, i64 value) { return format(arena, "%lld", (long long)value); }
-
-// Prefer String's operator== at new call sites; this stays until the old
-// ones migrate.
-fn bool equals(String a, String b) { return a == b; }
 
 fn b32 starts_with(String s, String prefix) {
     return s.len >= prefix.len && (prefix.len == 0 || memcmp(s.data, prefix.data, prefix.len) == 0);

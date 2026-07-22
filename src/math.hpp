@@ -1,6 +1,7 @@
 #pragma once
 #include "core.hpp"
 #include <compare>
+#include <math.h>
 
 namespace math {
 // Two dimensional vector
@@ -10,11 +11,13 @@ struct V2 {
 
     auto operator<=>(const V2&) const = default;
 
-    V2 operator+(V2 other) { return {this->x + other.x, this->y + other.y}; }
-    V2 operator-(V2 other) { return {this->x - other.x, this->y - other.y}; }
-    V2 operator*(f32 v) { return {this->x * v, this->y * v}; }
-    V2 operator/(f32 v) { return {this->x / v, this->y / v}; }
+    V2 operator+(V2 other) const { return {this->x + other.x, this->y + other.y}; }
+    V2 operator-(V2 other) const { return {this->x - other.x, this->y - other.y}; }
+    V2 operator*(f32 v) const { return {this->x * v, this->y * v}; }
+    V2 operator/(f32 v) const { return {this->x / v, this->y / v}; }
 };
+
+fn f32 length(V2 v) { return sqrtf(v.x * v.x + v.y * v.y); }
 
 // ZII: zero is transparent black.
 struct Color {

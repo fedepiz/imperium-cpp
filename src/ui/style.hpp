@@ -106,13 +106,13 @@ struct PaletteColor {
 // (transparent); unknown names come back not-ok so callers can warn or
 // fall back.
 fn PaletteColor palette_color(const Palette* palette, String name) {
-    if (string::equals(name, "panel")) return {palette->panel, true};
-    if (string::equals(name, "dark")) return {palette->dark, true};
-    if (string::equals(name, "outline")) return {palette->outline, true};
-    if (string::equals(name, "ink")) return {palette->ink, true};
-    if (string::equals(name, "muted")) return {palette->muted, true};
-    if (string::equals(name, "accent")) return {palette->accent, true};
-    if (string::equals(name, "none")) return {Color{}, true};
+    if (name == "panel") return {palette->panel, true};
+    if (name == "dark") return {palette->dark, true};
+    if (name == "outline") return {palette->outline, true};
+    if (name == "ink") return {palette->ink, true};
+    if (name == "muted") return {palette->muted, true};
+    if (name == "accent") return {palette->accent, true};
+    if (name == "none") return {Color{}, true};
     return {};
 }
 
@@ -156,18 +156,18 @@ fn StyleModule parse(arena::Arena* arena, String source) {
     Style style = default_style();
     for (const tabula::Node& node : parsed.roots) {
         Color* slot = 0;
-        if (string::equals(node.key, "panel_background")) slot = &style.palette.panel;
-        else if (string::equals(node.key, "dark")) slot = &style.palette.dark;
-        else if (string::equals(node.key, "outline")) slot = &style.palette.outline;
-        else if (string::equals(node.key, "ink")) slot = &style.palette.ink;
-        else if (string::equals(node.key, "muted")) slot = &style.palette.muted;
-        else if (string::equals(node.key, "accent")) slot = &style.palette.accent;
-        else if (string::equals(node.key, "button_background")) slot = &style.button_background;
-        else if (string::equals(node.key, "button_hover")) slot = &style.button_hover;
-        else if (string::equals(node.key, "button_press")) slot = &style.button_press;
-        else if (string::equals(node.key, "button_border_color")) slot = &style.button_border_color;
-        else if (string::equals(node.key, "tooltip_background")) slot = &style.tooltip_background;
-        else if (string::equals(node.key, "tooltip_ink")) slot = &style.tooltip_ink;
+        if (node.key == "panel_background") slot = &style.palette.panel;
+        else if (node.key == "dark") slot = &style.palette.dark;
+        else if (node.key == "outline") slot = &style.palette.outline;
+        else if (node.key == "ink") slot = &style.palette.ink;
+        else if (node.key == "muted") slot = &style.palette.muted;
+        else if (node.key == "accent") slot = &style.palette.accent;
+        else if (node.key == "button_background") slot = &style.button_background;
+        else if (node.key == "button_hover") slot = &style.button_hover;
+        else if (node.key == "button_press") slot = &style.button_press;
+        else if (node.key == "button_border_color") slot = &style.button_border_color;
+        else if (node.key == "tooltip_background") slot = &style.tooltip_background;
+        else if (node.key == "tooltip_ink") slot = &style.tooltip_ink;
 
         if (slot) {
             ColorResult color = parse_color(&node);
@@ -182,17 +182,17 @@ fn StyleModule parse(arena::Arena* arena, String source) {
 
         f32* number_slot = 0;
         u16* size_slot   = 0;
-        if (string::equals(node.key, "heading_size")) size_slot = &style.heading_size;
-        else if (string::equals(node.key, "section_size")) size_slot = &style.section_size;
-        else if (string::equals(node.key, "text_size")) size_slot = &style.text_size;
-        else if (string::equals(node.key, "tooltip_size")) size_slot = &style.tooltip_size;
-        else if (string::equals(node.key, "button_border_thickness")) number_slot = &style.button_border_thickness;
-        else if (string::equals(node.key, "button_corner_radius")) number_slot = &style.button_corner_radius;
-        else if (string::equals(node.key, "button_width")) number_slot = &style.button_width;
-        else if (string::equals(node.key, "button_height")) number_slot = &style.button_height;
-        else if (string::equals(node.key, "padding")) number_slot = &style.padding;
-        else if (string::equals(node.key, "gap")) number_slot = &style.gap;
-        else if (string::equals(node.key, "corner_radius")) number_slot = &style.corner_radius;
+        if (node.key == "heading_size") size_slot = &style.heading_size;
+        else if (node.key == "section_size") size_slot = &style.section_size;
+        else if (node.key == "text_size") size_slot = &style.text_size;
+        else if (node.key == "tooltip_size") size_slot = &style.tooltip_size;
+        else if (node.key == "button_border_thickness") number_slot = &style.button_border_thickness;
+        else if (node.key == "button_corner_radius") number_slot = &style.button_corner_radius;
+        else if (node.key == "button_width") number_slot = &style.button_width;
+        else if (node.key == "button_height") number_slot = &style.button_height;
+        else if (node.key == "padding") number_slot = &style.padding;
+        else if (node.key == "gap") number_slot = &style.gap;
+        else if (node.key == "corner_radius") number_slot = &style.corner_radius;
 
         if (number_slot || size_slot) {
             if (node.kind != tabula::Kind::Block && node.value.is_number) {

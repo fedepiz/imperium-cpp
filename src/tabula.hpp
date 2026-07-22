@@ -381,11 +381,11 @@ fn ParseResult parse(arena::Arena* arena, String src) {
 // First child with this key; the permanently-zeroed nil node when there is
 // none, so chained lookups are always safe: get(get(root, camp), site).
 // Duplicate keys are legal and common — to visit every match, loop children
-// with string::equals yourself.
+// and compare keys yourself.
 fn const Node* get(const Node* node, String key) {
     for (usize i = 0; i < node->children.len; ++i) {
         const Node* child = &node->children.data[i];
-        if (string::equals(child->key, key)) return child;
+        if (child->key == key) return child;
     }
     return &NIL_NODE;
 }
@@ -433,8 +433,8 @@ fn f32 item_number(const Node* node, usize index) { return item_value(node, inde
 fn b32 read_b32(const Node* node, String key, b32 fallback) {
     Value value = get_value(node, key);
     if (value.is_number) return value.number != 0;
-    if (string::equals(value.text, "yes")) return true;
-    if (string::equals(value.text, "no")) return false;
+    if (value.text == "yes") return true;
+    if (value.text == "no") return false;
     return fallback;
 }
 

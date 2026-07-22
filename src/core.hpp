@@ -67,6 +67,7 @@ constexpr usize GB = 1024 * MB;
 
 template <typename T> fn T min(T a, T b) { return a < b ? a : b; }
 template <typename T> fn T max(T a, T b) { return a > b ? a : b; }
+template <typename T, const usize N> fn constexpr usize countof(T (&)[N]) { return N; }
 template <typename T> fn T clamp(T value, T low, T high) { return value < low ? low : (value > high ? high : value); }
 
 // Basic aggregate types: arrays and slices
