@@ -850,19 +850,19 @@ fn b32 test_game_interactions() {
 
         game::Fact facts_a[] = {town_fact};
         game::Fact facts_b[] = {person_fact, town_fact};
-        game::facts_sort(slice(facts_b));
+        sort::unstable(slice(facts_b), game::fact_less);
 
         game::Fact       req_town[] = {town_fact};
         game::Fact       req_both[] = {town_fact, person_fact};
         game::TriggerDef anything   = {};
-        game::facts_sort(slice(req_both));
+        sort::unstable(slice(req_both), game::fact_less);
 
-        CHECK(game::trigger_accepts(slice(req_town), slice(facts_a)));
-        CHECK(game::trigger_accepts(slice(req_town), slice(facts_b)));
-        CHECK(!game::trigger_accepts(slice(req_both), slice(facts_a))); // person missing
-        CHECK(game::trigger_accepts(slice(req_both), slice(facts_b)));
-        CHECK(game::trigger_accepts(anything.required, slice(facts_a)));
-        CHECK(game::trigger_accepts(anything.required, {}));
+        CHECK(game::facts_match(slice(req_town), slice(facts_a)));
+        CHECK(game::facts_match(slice(req_town), slice(facts_b)));
+        CHECK(!game::facts_match(slice(req_both), slice(facts_a))); // person missing
+        CHECK(game::facts_match(slice(req_both), slice(facts_b)));
+        CHECK(game::facts_match(anything.required, slice(facts_a)));
+        CHECK(game::facts_match(anything.required, {}));
     }
 
     // Unknown names are load problems; a record with a broken trigger is
@@ -880,7 +880,7 @@ fn b32 test_game_interactions() {
         CHECK(problems.len >= 6);
         CHECK(in.texts.len == 0);
         CHECK(in.choices.len == 1 && in.choices[0].action == game::Action::Nil);
-        CHECK(in.choices[0].scope == game::Scope::Nil);
+        CHECK(in.choices[0].scope == game::Scope::Root);
         arena::release(&in.arena);
     }
 

@@ -9,6 +9,7 @@
 #include "tabula.hpp"
 #include "ui/data.hpp"
 #include "vec.hpp"
+#include "sort.hpp"
 #include <limits>
 
 namespace game {
@@ -75,7 +76,7 @@ struct Id {
     u16 slot;
     u16 generation;
 
-         operator b32() const;
+    operator b32() const;
     bool operator==(const Id&) const = default;
 };
 
@@ -473,32 +474,21 @@ fn b32 fact_less(Fact a, Fact b) {
     return a.value < b.value;
 }
 
-// Insertion sort — fine while fact sets stay small, produced only in the
-// two places that own the sortedness invariant (facts_compute,
-// trigger_compile). Revisit alongside the matcher if profiles ever say so.
-fn void facts_sort(Slice<Fact> facts) {
-    for (usize i = 1; i < facts.len; i++) {
-        Fact  fact = facts[i];
-        usize j    = i;
-        while (j > 0 && fact_less(fact, facts[j - 1])) {
-            facts[j] = facts[j - 1];
-            j--;
-        }
-        facts[j] = fact;
-    }
-}
-
 struct TriggerDef {
     Slice<Fact> required; // sorted; empty = matches anything
 };
 
-// What a fragment record expands over. Nil = one instance, about the
-// interaction's target; anything else names a code-computed set — one
-// per element, and the instance's $TARGET and action target both become
-// that element. Iteration lives in code; data names the set.
+// What a fragment record expands over: a scope names a code-computed set,
+// one instance per element, and the instance's $TARGET and action target
+// both become that element. Compiled defs always carry a real scope —
+// records that spell none (or "nil"/"root") read as Root — so Nil is only
+// the ZII placeholder of a def that never went through compilation.
+// Iteration lives in code; data names the set.
 enum class Scope : u32 {
     Nil,
+    Root,      // one instance: the interaction's primary target
     Occupants, // the things contained in the interaction's target (LocationOf)
+    Count,
 };
 
 struct TextDef {
@@ -577,13 +567,13 @@ template <const usize N> fn void interpolate(DynString<N>* dest, String tmpl, Sl
     if (truncated) { LOG("interpolate: output truncated (%d byte cap)", (int)N); }
 }
 
-// Parse a scope name ("scope = occupants"). Empty and "nil" are the
-// explicit no-scope; unknown names report and read as Nil.
+// Parse a scope name ("scope = occupants"). Empty, "nil" and "root" all
+// spell the primary-target scope; unknown names report and read as Root.
 fn Scope scope_compile(Arena* arena, vec::Vec<String>* problems, String name) {
-    if (!name.len || name == String("nil")) return Scope::Nil;
+    if (!name.len || name == String("nil") || name == String("root")) return Scope::Root;
     if (name == String("occupants")) return Scope::Occupants;
     vec::push(problems, string::format(arena, "unknown scope '%.*s'", (int)name.len, name.data));
-    return Scope::Nil;
+    return Scope::Root;
 }
 
 // Fact ids are indices into FACT_DEFS, spelled as constants beside their
@@ -622,7 +612,7 @@ fn Slice<Fact> facts_compute(const World* world, Arena* scratch) {
         if (def.produce) { def.produce(world, &facts); }
     }
     Slice<Fact> set = vec::slice(facts);
-    facts_sort(set);
+    sort::unstable(set, fact_less);
     return set;
 }
 
@@ -657,7 +647,7 @@ fn b32 trigger_compile(Arena* arena, vec::Vec<String>* problems, const tabula::N
         vec::push(&required, {kind, value});
     }
     out->required = vec::slice(required);
-    facts_sort(out->required);
+    sort::unstable(out->required, fact_less);
     return ok;
 }
 
@@ -683,7 +673,8 @@ fn Slice<String> interactions_compile(InteractionDefs* in, String source) {
     for (const auto& root : result.roots) {
         if (root.key == String("text")) {
             TextDef def = {};
-            b32     ok  = true;
+            def.scope   = Scope::Root; // records that spell no scope read as Root
+            b32 ok      = true;
             for (const auto& field : root.children) {
                 if (field.key == String("trigger")) {
                     ok = trigger_compile(arena, &problems, &field, &def.trigger) && ok;
@@ -699,7 +690,8 @@ fn Slice<String> interactions_compile(InteractionDefs* in, String source) {
             if (ok) { vec::push(&texts, def); }
         } else if (root.key == String("choice")) {
             ChoiceDef def = {};
-            b32       ok  = true;
+            def.scope     = Scope::Root;
+            b32 ok        = true;
             for (const auto& field : root.children) {
                 if (field.key == String("trigger")) {
                     ok = trigger_compile(arena, &problems, &field, &def.trigger) && ok;
@@ -750,7 +742,7 @@ fn Slice<String> interactions_load(InteractionDefs* in, String path) {
 
 // Subset test over two SORTED fact sets — the entire matcher. An empty
 // requirement list asks for nothing and accepts anything.
-fn b32 trigger_accepts(Slice<Fact> required, Slice<Fact> facts) {
+fn b32 facts_match(Slice<Fact> required, Slice<Fact> facts) {
     usize at = 0;
     for (Fact req : required) {
         while (at < facts.len && fact_less(facts[at], req)) at++;
@@ -1595,18 +1587,20 @@ fn b32 interaction_add_choice(Interaction* interaction, const ChoiceDef* def, Id
 // Start the player's meeting interaction by composing the fragment sea
 // over the computed facts: every matching text record concatenates into
 // the description (file order, space-joined), every matching choice record
-// is offered. A scoped record expands into one instance per element of its
-// set, the instance's $TARGET and action target being that element.
-// Meetings are unordered collisions and interactions are written from the
-// player's POV: the subject is always the player, the target the other
-// party, whoever stepped into whom. The title is the target's name —
-// computed, not authored. An already-open interaction wins — later
-// meetings this tick still reach the event log, they just don't start
-// one. The gate counts INSTANCES (a scoped record over an empty set
-// contributes none): a meeting with no text or no choices is a content
-// gap — LOG, and the zeroed interaction rolls back (one without choices
-// could never be resolved). Composition walks children_of, so it must run
-// where the hierarchy is fresh.
+// is offered. A record expands into one instance per element of its
+// scope's set, the instance's $TARGET and action target being that
+// element: scopes are instantiated once up front — entries grouped per
+// scope, each carrying its variable rows — and every def walks its
+// scope's run. Meetings are unordered collisions and interactions are
+// written from the player's POV: the subject is always the player, the
+// target the other party, whoever stepped into whom. The title is the
+// target's name — computed, not authored. An already-open interaction
+// wins — later meetings this tick still reach the event log, they just
+// don't start one. The gate counts INSTANCES (a scoped record over an
+// empty set contributes none): a meeting with no text or no choices is a
+// content gap — LOG, and the zeroed interaction rolls back (one without
+// choices could never be resolved). Composition walks children_of, so it
+// must run where the hierarchy is fresh.
 fn void interaction_start(Game* game, Id subject, Id target_id) {
     World* world = &game->world;
     if (world->interaction.active) return;
@@ -1627,33 +1621,53 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     ScratchArena scratch(&game->arena);
     Slice<Fact>  facts = facts_compute(world, &game->arena);
 
+    // One instance of a scope's set: the element itself, plus the variable
+    // rows every fragment spliced for this instance resolves against.
+    struct ScopeEntry {
+        Id                 target;
+        Slice<TemplateVar> vars;
+    };
+
+    // Instantiate the scopes, in enum order: Root's one entry, then one per
+    // occupant in hierarchy order. runs[s] views scope s's group, so a def
+    // finds its instances by lookup; runs[Nil] stays empty — a zeroed def
+    // matches nothing.
+    ChildrenView<Thing> occupants   = children_of(game, Hierarchy::LocationOf, target_id);
+    usize               entry_count = 1 + occupants.len;
+    ScopeEntry*         entries     = arena::allocate<ScopeEntry>(&game->arena, entry_count);
+    TemplateVar*        vars        = arena::allocate<TemplateVar>(&game->arena, entry_count * 2);
+
+    entries[0].target = target_id;
+    entries[0].vars   = {2, vars};
+    vars[0]           = {"TARGET", target_name};
+    vars[1]           = {"SUBJECT", subject_name};
+    usize filled      = 1;
+    for (Thing* element : occupants) {
+        vars[filled * 2 + 0]   = {"TARGET", resolve_name(world, element->name)};
+        vars[filled * 2 + 1]   = {"SUBJECT", subject_name};
+        entries[filled].target = element->id;
+        entries[filled].vars   = {2, vars + filled * 2};
+        filled++;
+    }
+
+    Array<Slice<ScopeEntry>, (usize)Scope::Count> runs = {};
+    runs[(usize)Scope::Root]                           = {1, entries};
+    runs[(usize)Scope::Occupants]                      = {occupants.len, entries + 1};
+
     usize text_count = 0;
     for (const TextDef& def : game->interactions.texts) {
-        if (!trigger_accepts(def.trigger.required, facts)) continue;
-        if (def.scope == Scope::Occupants) {
-            for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
-                TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
-                interaction_add_text(interaction, def.text, slice(vars));
-                text_count++;
-            }
-        } else {
-            TemplateVar vars[] = {{"TARGET", target_name}, {"SUBJECT", subject_name}};
-            interaction_add_text(interaction, def.text, slice(vars));
+        if (!facts_match(def.trigger.required, facts)) continue;
+        for (const ScopeEntry& entry : runs[(usize)def.scope]) {
+            interaction_add_text(interaction, def.text, entry.vars);
             text_count++;
         }
     }
 
     b32 choices_full = false;
     for (const ChoiceDef& def : game->interactions.choices) {
-        if (!trigger_accepts(def.trigger.required, facts)) continue;
-        if (def.scope == Scope::Occupants) {
-            for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
-                TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
-                choices_full = !interaction_add_choice(interaction, &def, element->id, slice(vars)) || choices_full;
-            }
-        } else {
-            TemplateVar vars[] = {{"TARGET", target_name}, {"SUBJECT", subject_name}};
-            choices_full       = !interaction_add_choice(interaction, &def, target_id, slice(vars)) || choices_full;
+        if (!facts_match(def.trigger.required, facts)) continue;
+        for (const ScopeEntry& entry : runs[(usize)def.scope]) {
+            choices_full = !interaction_add_choice(interaction, &def, entry.target, entry.vars) || choices_full;
         }
     }
     if (choices_full) { LOG("interaction: choice list full — instances dropped"); }

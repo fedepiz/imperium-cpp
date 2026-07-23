@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>interaction_start — staged composition pipeline</title>
+<style>
+  :root {
+    --bg:        #f7f5f1;
+    --surface:   #fdfcfa;
+    --ink:       #1b1620;
+    --ink-2:     #564e5f;
+    --muted:     #8a8093;
+    --hairline:  #e4dfd7;
+    --accent:    #6d1b44;
+    --accent-soft: rgba(109, 27, 68, 0.07);
+    --code-bg:   #f0ece6;
+    --good:      #2c6e42;
+    --good-bg:   rgba(44, 110, 66, 0.09);
+    --warn:      #96660f;
+    --warn-bg:   rgba(150, 102, 15, 0.10);
+    --crit:      #a83434;
+    --crit-bg:   rgba(168, 52, 52, 0.08);
+    --serif: "Charter", "Iowan Old Style", "Palatino", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #171219;
+      --surface:   #1f1926;
+      --ink:       #eae4f0;
+      --ink-2:     #b2a8bf;
+      --muted:     #7b7186;
+      --hairline:  #2d2536;
+      --accent:    #d783ad;
+      --accent-soft: rgba(215, 131, 173, 0.10);
+      --code-bg:   #231c2c;
+      --good:      #63b981;
+      --good-bg:   rgba(99, 185, 129, 0.12);
+      --warn:      #d0a050;
+      --warn-bg:   rgba(208, 160, 80, 0.12);
+      --crit:      #d97070;
+      --crit-bg:   rgba(217, 112, 112, 0.11);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:        #f7f5f1;
+    --surface:   #fdfcfa;
+    --ink:       #1b1620;
+    --ink-2:     #564e5f;
+    --muted:     #8a8093;
+    --hairline:  #e4dfd7;
+    --accent:    #6d1b44;
+    --accent-soft: rgba(109, 27, 68, 0.07);
+    --code-bg:   #f0ece6;
+    --good:      #2c6e42;
+    --good-bg:   rgba(44, 110, 66, 0.09);
+    --warn:      #96660f;
+    --warn-bg:   rgba(150, 102, 15, 0.10);
+    --crit:      #a83434;
+    --crit-bg:   rgba(168, 52, 52, 0.08);
+  }
+  :root[data-theme="dark"] {
+    --bg:        #171219;
+    --surface:   #1f1926;
+    --ink:       #eae4f0;
+    --ink-2:     #b2a8bf;
+    --muted:     #7b7186;
+    --hairline:  #2d2536;
+    --accent:    #d783ad;
+    --accent-soft: rgba(215, 131, 173, 0.10);
+    --code-bg:   #231c2c;
+    --good:      #63b981;
+    --good-bg:   rgba(99, 185, 129, 0.12);
+    --warn:      #d0a050;
+    --warn-bg:   rgba(208, 160, 80, 0.12);
+    --crit:      #d97070;
+    --crit-bg:   rgba(217, 112, 112, 0.11);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    margin: 0;
+  }
+  .page {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.75rem;
+  }
+  h1 {
+    font-size: 2.1rem;
+    line-height: 1.15;
+    margin: 0 0 0.5rem;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 code { font-size: 0.92em; }
+  .subtitle { color: var(--ink-2); margin: 0 0 1.25rem; max-width: 62ch; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    margin-bottom: 0;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    color: var(--ink-2);
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  .chip.accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
+
+  header.doc { padding-bottom: 2rem; border-bottom: 1px solid var(--hairline); }
+
+  nav.toc { margin: 1.75rem 0 0; }
+  nav.toc ol {
+    list-style: none;
+    margin: 0; padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 0.3rem 2rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+  }
+  nav.toc a { color: var(--ink-2); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); }
+  nav.toc .n { color: var(--accent); margin-right: 0.5em; }
+
+  section { margin-top: 3.25rem; }
+  h2 {
+    font-size: 1.45rem;
+    line-height: 1.25;
+    margin: 0 0 1rem;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+  }
+  h2 .n {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 400;
+    color: var(--accent);
+    display: block;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.35rem;
+  }
+  h3 { font-size: 1.08rem; margin: 1.75rem 0 0.5rem; text-wrap: balance; }
+  p { margin: 0 0 1rem; max-width: 68ch; }
+  ul, ol { max-width: 66ch; padding-left: 1.4rem; margin: 0 0 1rem; }
+  li { margin-bottom: 0.35rem; }
+  strong { font-weight: 700; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.84em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.55;
+    margin: 0 0 1rem;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .cm { color: var(--muted); }
+  .kw { color: var(--accent); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 1.1rem 1.25rem;
+    margin: 0 0 1rem;
+  }
+
+  /* pipeline strip */
+  .strip-scroll { overflow-x: auto; margin: 0 0 1.25rem; }
+  .strip {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-width: max-content;
+    padding: 0.25rem 0;
+  }
+  .stage {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 0.6rem 0.85rem;
+    min-width: 8.5rem;
+    max-width: 11rem;
+  }
+  .stage .sn { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em; color: var(--accent); display: block; margin-bottom: 0.15rem; }
+  .stage .st { font-size: 0.85rem; line-height: 1.35; display: block; }
+  .stage .so { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); display: block; margin-top: 0.3rem; }
+  .stage.compile { border-style: dashed; }
+  .arrow {
+    align-self: center;
+    font-family: var(--mono);
+    color: var(--muted);
+    padding: 0 0.45rem;
+    flex: none;
+  }
+
+  /* two-up compare */
+  .compare {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    gap: 1rem;
+    margin: 0 0 1rem;
+  }
+  .compare .card { margin: 0; }
+  .compare h4 {
+    margin: 0 0 0.6rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .loopbox {
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.5rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    line-height: 1.6;
+  }
+  .loopbox .dup { color: var(--crit); }
+  .loopbox .one { color: var(--good); }
+
+  /* tables */
+  .tablewrap { overflow-x: auto; margin: 0 0 1rem; border: 1px solid var(--hairline); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+  th {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 400;
+    color: var(--muted);
+    text-align: left;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.5rem 0.9rem;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+  .num { font-family: var(--mono); font-size: 0.8rem; }
+
+  /* pitfalls */
+  .pitfall {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--muted);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 0 0 1rem;
+  }
+  .pitfall.crit { border-left-color: var(--crit); }
+  .pitfall.high { border-left-color: var(--warn); }
+  .pitfall.med  { border-left-color: var(--ink-2); }
+  .pitfall h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+  .pitfall p:last-child, .pitfall pre:last-child, .pitfall ul:last-child { margin-bottom: 0; }
+  .sev {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    vertical-align: 0.15em;
+    margin-left: 0.6rem;
+  }
+  .sev.crit { color: var(--crit); background: var(--crit-bg); }
+  .sev.high { color: var(--warn); background: var(--warn-bg); }
+  .sev.med  { color: var(--ink-2); background: var(--code-bg); }
+
+  .rec {
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-radius: 6px;
+    padding: 0.9rem 1.2rem;
+    margin: 0 0 1rem;
+    max-width: none;
+  }
+  .rec p { max-width: none; }
+  .rec .tag { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 0.3rem; }
+  .rec p:last-child { margin-bottom: 0; }
+
+  .good-note { color: var(--good); }
+  .prompt-demo {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.7;
+  }
+  .prompt-demo .t { color: var(--ink-2); }
+
+  footer.doc {
+    margin-top: 4rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--hairline);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<header class="doc">
+  <p class="eyebrow">imperium-cpp · design note · 2026-07-23</p>
+  <h1><code>interaction_start</code> — the staged composition pipeline</h1>
+  <p class="subtitle">A plan for the rework sketched in <code>src/game.hpp:1619–1669</code>: replace the two branch-per-scope loops with a data pipeline — instantiate scopes once, join defs against instances, splice from a variable table, restore authored order at the end. No code has been changed; this document details the process as intended, flags the traps, and proposes the cheaper cuts.</p>
+  <div class="meta">
+    <span class="chip accent">planning only — no code touched</span>
+    <span class="chip">branch worktree-map-sort</span>
+    <span class="chip">game.hpp @ interaction_start</span>
+    <span class="chip">sketch: uncommitted diff</span>
+  </div>
+  <nav class="toc" aria-label="Contents">
+    <ol>
+      <li><a href="#why"><span class="n">§1</span>Why reshape it</a></li>
+      <li><a href="#landed"><span class="n">§2</span>Already landed in the diff</a></li>
+      <li><a href="#pipeline"><span class="n">§3</span>The intended pipeline</a></li>
+      <li><a href="#example"><span class="n">§4</span>Worked example: Town1</a></li>
+      <li><a href="#pitfalls"><span class="n">§5</span>Pitfalls</a></li>
+      <li><a href="#cuts"><span class="n">§6</span>Sharper cuts</a></li>
+      <li><a href="#budget"><span class="n">§7</span>Cost budget</a></li>
+      <li><a href="#order"><span class="n">§8</span>Implementation order</a></li>
+      <li><a href="#decisions"><span class="n">§9</span>Open decisions</a></li>
+    </ol>
+  </nav>
+</header>
+
+<section id="why">
+  <h2><span class="n">§ 1</span>Why reshape it</h2>
+  <p>Today <code>interaction_start</code> runs two def loops — texts, then choices — and each loop re-implements scope expansion inline. The <code>Occupants</code> branch walks <code>children_of</code>, builds a <code>TemplateVar</code> array, and emits per element; the unscoped branch builds a nearly identical array and emits once. The same fork appears twice, once per record kind.</p>
+  <div class="compare">
+    <div class="card">
+      <h4>Today — scope logic inline, twice</h4>
+      <div class="loopbox">for def : texts<br>&nbsp;&nbsp;<span class="dup">if Occupants → walk children, vars, emit</span><br>&nbsp;&nbsp;<span class="dup">else → vars, emit</span></div>
+      <div class="loopbox">for def : choices<br>&nbsp;&nbsp;<span class="dup">if Occupants → walk children, vars, emit</span><br>&nbsp;&nbsp;<span class="dup">else → vars, emit</span></div>
+    </div>
+    <div class="card">
+      <h4>Intended — scopes instanced once, defs join</h4>
+      <div class="loopbox"><span class="one">instantiate scopes → entries + vars</span></div>
+      <div class="loopbox">for def : texts&nbsp;&nbsp;&nbsp;→ join entries, splice</div>
+      <div class="loopbox">for def : choices → join entries, splice</div>
+    </div>
+  </div>
+  <p>The costs of the current shape, in order of how much they matter:</p>
+  <ul>
+    <li><strong>Every new scope is 2×N branches.</strong> Adding a third scope (say, things at the same map cell) means editing both loops. The <code>Scope</code> enum comment already promises "iteration lives in code; data names the set" — but the iteration is copy-pasted per record kind, not owned once.</li>
+    <li><strong>Variables are hard-coded per branch.</strong> <code>$TARGET</code>/<code>$SUBJECT</code> arrays are rebuilt per instance, and a new variable (<code>$LOCATION</code>, <code>$KIND</code>) would touch all four branches.</li>
+    <li><strong>Redundant walks.</strong> <code>children_of</code> runs once per scoped def, and <code>resolve_name</code> once per def × element. Harmless at current scale, but it is work the shape forces, not work the problem needs.</li>
+  </ul>
+  <p>The intended rework moves scope iteration and variable production into data built once per start — the same move <code>FACT_DEFS</code> already made for facts. That is the right instinct; the rest of this document is about landing it without losing the invariants the current code quietly holds: <strong>authored order, occupant order, the instance gate, and replay determinism</strong>.</p>
+</section>
+
+<section id="landed">
+  <h2><span class="n">§ 2</span>Already landed in the diff</h2>
+  <p>Parts of the working diff are finished cleanups, independent of the pipeline:</p>
+  <ul>
+    <li><code>trigger_accepts</code> → <code>facts_match</code> — better name, matcher unchanged.</li>
+    <li><code>facts_sort</code> (bespoke insertion sort) deleted in favor of <code>sort::unstable</code> at both call sites. Fine: fact keys are compared by <code>(kind, value)</code> and duplicates don't care about tie order.</li>
+    <li><code>Scope::Root</code> added to the enum — semantics still to be decided (<a href="#p5">P5</a>).</li>
+    <li><code>#include "list.hpp"</code> added but nothing uses it yet. Note: the staging vectors need to be <em>sorted</em>, and <code>list::List</code> has no random indexing — <code>vec::Vec</code> + <code>Slice</code> is the right container everywhere in this pipeline. If no stage ends up wanting a queue, drop the include.</li>
+  </ul>
+</section>
+
+<section id="pipeline">
+  <h2><span class="n">§ 3</span>The intended pipeline</h2>
+  <p>Six stages. Stage 0 runs at compile/load time (<code>interactions_compile</code>); stages 1–5 run per <code>interaction_start</code>, all staging data on a scratch watermark.</p>
+  <div class="strip-scroll">
+    <div class="strip">
+      <div class="stage compile"><span class="sn">0 · compile</span><span class="st">defs carry position, stored sorted by scope</span><span class="so">TextDef · ChoiceDef</span></div>
+      <span class="arrow">→</span>
+      <div class="stage"><span class="sn">1 · instance</span><span class="st">scopes → entries {scope, target}</span><span class="so">Vec&lt;ScopeEntry&gt;</span></div>
+      <span class="arrow">→</span>
+      <div class="stage"><span class="sn">2 · vars</span><span class="st">entry × name → value table</span><span class="so">TemplateVar runs</span></div>
+      <span class="arrow">→</span>
+      <div class="stage"><span class="sn">3 · join</span><span class="st">defs × entries of their scope</span><span class="so">instanced defs</span></div>
+      <span class="arrow">→</span>
+      <div class="stage"><span class="sn">4 · order</span><span class="st">sort instances by authored position</span><span class="so">(position, ordinal)</span></div>
+      <span class="arrow">→</span>
+      <div class="stage"><span class="sn">5 · emit</span><span class="st">splice + gate, build the Interaction</span><span class="so">description · choices</span></div>
+    </div>
+  </div>
+
+  <h3>Stage 0 — positions at compile, defs sorted by scope</h3>
+  <p>Each <code>TextDef</code>/<code>ChoiceDef</code> gains a position: its index in file order, captured at <code>vec::push</code> time in <code>interactions_compile</code> — <em>before</em> any re-sort, and per kind (texts and choices order independently; they land in different output lists). Then each slice is sorted by <code>(scope, position)</code>:</p>
+  <pre><code><span class="kw">struct</span> TextDef {
+    TriggerDef trigger;
+    Scope      scope;
+    u32        position; <span class="cm">// file order within texts — restores authored order after the scope sort</span>
+    String     text;
+};
+
+<span class="cm">// interactions_compile, after both vecs are built:</span>
+sort::unstable(in-&gt;texts,   def_less);  <span class="cm">// (scope, position) — keys unique, so</span>
+sort::unstable(in-&gt;choices, def_less);  <span class="cm">// instability is harmless and no scratch is needed</span></code></pre>
+  <p>Sorting here, once per load, is the right call — sorting per <code>interaction_start</code> would repeat load-time work at runtime. The composite key matters: sorting by scope alone with a heapsort scrambles same-scope defs (<a href="#p3">P3</a> is the same trap one stage later).</p>
+
+  <h3>Stage 1 — instantiate scopes</h3>
+  <p>One place owns "what does each scope expand to": a vector of <code>ScopeEntry {scope, target}</code>. <code>Root</code> contributes the interaction's target; <code>Occupants</code> one entry per <code>children_of(LocationOf, target)</code>, in hierarchy order. Built by iterating scopes in <strong>enum order, the list is sorted by construction</strong> — no sort call, no comparator, and crucially no ordering derived from <code>Id</code> (<a href="#p2">P2</a>).</p>
+
+  <h3>Stage 2 — the variable table</h3>
+  <p>Rows of <em>entry × name → value</em>. Reuse <code>TemplateVar</code> as the row payload and lay each entry's rows contiguously, so an entry's variables are one <code>Slice&lt;TemplateVar&gt;</code> — exactly what <code>interpolate</code> takes:</p>
+  <pre><code><span class="kw">struct</span> ScopeEntry {
+    Scope              scope;
+    Id                 target;
+    Slice&lt;TemplateVar&gt; vars; <span class="cm">// this entry's contiguous rows of the var table</span>
+};
+<span class="cm">// per entry: {"TARGET", resolve_name(entry.target)}, {"SUBJECT", subject_name}</span></code></pre>
+  <p><code>$SUBJECT</code> is the same for every entry; duplicating the row per entry (2 × E rows total) is simpler than teaching <code>interpolate</code> a second slice. <code>resolve_name</code> now runs once per entry instead of once per def × element. A new variable becomes a row appended here — no other stage changes.</p>
+
+  <h3>Stage 3 — join defs against entries</h3>
+  <p>For each def that passes <code>facts_match</code>, pair it with every entry of its scope. With defs sorted by scope and entries grouped by scope, this is a merge join — but see <a href="#cuts">§6-B</a>: a tiny per-scope runs array makes the join an array lookup and needs no cursors. The sketch's block-local <code>template&lt;typename T&gt; InstancedDef</code> does not compile as written (<a href="#p1">P1</a>); the staged record wants to be a plain POD of indices anyway:</p>
+  <pre><code><span class="kw">struct</span> Staged {
+    u32 position; <span class="cm">// the def's file-order index (per kind)</span>
+    u32 ordinal;  <span class="cm">// the entry's index within its scope run — occupant order</span>
+    u32 def;      <span class="cm">// index into the (scope-sorted) def slice</span>
+    u32 entry;    <span class="cm">// index into the entries vec</span>
+};</code></pre>
+
+  <h3>Stage 4 — restore authored order</h3>
+  <p>Sort the staged records by <code>(position, ordinal)</code>. Both components are load-bearing: <code>position</code> restores file order across defs, <code>ordinal</code> preserves occupant order among the instances of one scoped def — with a bare <code>position</code> key and a heapsort, "Wanderer / Trader" can come out "Trader / Wanderer" on any given run (<a href="#p3">P3</a>).</p>
+
+  <h3>Stage 5 — emit and gate</h3>
+  <p>Walk the sorted staged records and splice <em>directly into the interaction</em> through the existing <code>interaction_add_text</code> / <code>interaction_add_choice</code>, handing each the entry's var slice. Staging spliced strings (<code>TextFragment{String}</code>, <code>ChoiceInstance{Choice}</code>) is the one part of the sketch worth dropping: <code>interpolate</code> writes into a <code>DynString&lt;N&gt;</code>, so staged text would need a new arena-targeting interpolate variant plus a copy per fragment (<a href="#p4">P4</a>). Sorting <em>references</em> first and splicing last gets the same output with the machinery that already exists.</p>
+  <p>The gate is unchanged in meaning: staged counts per kind are known before emission — zero text instances or zero choice instances is a content gap, LOG and roll the zeroed interaction back. One caveat: the interaction header must still be written <em>before</em> <code>facts_compute</code>, because fact producers read the situation out of <code>world-&gt;interaction</code> (<a href="#p7">P7</a>).</p>
+</section>
+
+<section id="example">
+  <h2><span class="n">§ 4</span>Worked example — meeting Town1</h2>
+  <p>Real data from <code>data/interactions.txt</code>. The player meets <code>Town1</code>; facts compute to <code>target_kind = town</code>; suppose two occupants in hierarchy order, <code>Wanderer</code> then a second person, call it <code>Trader</code>. Choices trace (positions are file order among choice records):</p>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>pos</th><th>record</th><th>scope</th><th>facts</th><th>instances (position, ordinal)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">0</td><td><code>"Greet $TARGET"</code> · meet</td><td><code>Occupants</code></td><td>town ✓</td><td>Greet Wanderer <span class="num">(0,0)</span> · Greet Trader <span class="num">(0,1)</span></td></tr>
+        <tr><td class="num">1</td><td><code>"Enter"</code> · enter</td><td><code>Root</code></td><td>town ✓</td><td>Enter <span class="num">(1,0)</span></td></tr>
+        <tr><td class="num">2</td><td><code>"Greet"</code></td><td><code>Root</code></td><td>person ✗ — dropped</td><td>—</td></tr>
+        <tr><td class="num">3</td><td><code>"Move on"</code></td><td><code>Root</code></td><td>(none) ✓</td><td>Move on <span class="num">(3,0)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>After stage 0 the stored def order is scope-major — <code>Enter (1)</code>, <code>Move on (3)</code>, <code>Greet $TARGET (0)</code> — so the join emits instances in that order: <span class="num">(1,0) (3,0) (0,0) (0,1)</span>. The stage-4 sort restores <span class="num">(0,0) (0,1) (1,0) (3,0)</span>, and the final prompt matches today's byte for byte:</p>
+  <div class="card prompt-demo">
+    <span class="t">You have reached Town1. It is a town. Wanderer is here. Trader is here.</span><br>
+    1&nbsp;&nbsp;Greet Wanderer<br>
+    2&nbsp;&nbsp;Greet Trader<br>
+    3&nbsp;&nbsp;Enter<br>
+    4&nbsp;&nbsp;Move on
+  </div>
+  <p>Note the tie at position 0: two instances of the same scoped def. That tie is exactly where an unstable sort without the ordinal component reorders occupants at random — and choice order is replay-visible, since resolved choices travel as indices in the command log.</p>
+</section>
+
+<section id="pitfalls">
+  <h2><span class="n">§ 5</span>Pitfalls</h2>
+
+  <div class="pitfall crit" id="p1">
+    <h3>P1 · Block-scope template does not compile<span class="sev crit">blocker</span></h3>
+    <p><code>template &lt;typename T&gt; struct InstancedDef</code> is declared inside <code>interaction_start</code> — C++ forbids template declarations at block scope; this fails to parse. Options: hoist it to namespace scope next to <code>TextDef</code>, or — better — don't template it. The staged record never needs the def pointer's type: keep per-kind staging vecs of the plain <code>Staged</code> POD above, and let the two emit loops index their own def slice. Two short loops over a shared shape, no generic machinery.</p>
+  </div>
+
+  <div class="pitfall crit" id="p2">
+    <h3>P2 · <code>ScopeEntry</code>'s defaulted <code>&lt;=&gt;</code> is deleted — and ordering by <code>Id</code> is wrong anyway<span class="sev crit">blocker</span></h3>
+    <p>Two independent problems in <code>auto operator&lt;=&gt;(const ScopeEntry&amp;) const = default</code>:</p>
+    <ul>
+      <li><code>Id</code> defines only <code>operator==</code>, so the defaulted <code>&lt;=&gt;</code> is implicitly deleted — it compiles until the first <code>&lt;</code>, then fails where the sort instantiates.</li>
+      <li>Even with <code>&lt;=&gt;</code> added to <code>Id</code>, its order is <em>slot order</em> — spawn order, not hierarchy order. Sorting entries would shuffle occupant lines relative to today's <code>children_of</code> order.</li>
+    </ul>
+    <p>Fix: never sort entries. Instantiate scopes in enum order (stage 1) and the list is grouped by scope by construction, occupants staying in hierarchy order. Drop the operator entirely; nothing needs it.</p>
+  </div>
+
+  <div class="pitfall crit" id="p3">
+    <h3>P3 · Tie-stability in the reorder sort<span class="sev crit">blocker</span></h3>
+    <p>All instances of one scoped def share that def's position. <code>sort::unstable</code> is a heapsort — it scrambles ties, so occupant instances would reorder arbitrarily between runs. That breaks display order and, worse, replay: choices resolve by index (<code>choice_index</code> in the command log), so nondeterministic order silently diverges replays. Fix either way:</p>
+    <ul>
+      <li>composite key <code>(position, ordinal)</code> with <code>sort::unstable</code> — keys unique, no scratch needed (recommended), or</li>
+      <li><code>sort::stable</code> with the scratch arena, keyed on position alone.</li>
+    </ul>
+  </div>
+
+  <div class="pitfall high" id="p4">
+    <h3>P4 · Staged spliced strings have nowhere to live<span class="sev high">design</span></h3>
+    <p><code>TextFragment{String text}</code> implies splicing before sorting, but <code>interpolate</code> only writes into a <code>DynString&lt;N&gt;</code>: staging spliced text means writing a second, arena-targeting interpolate (duplicating its truncation contract), plus copying every <code>Choice</code> (~270 B with its <code>DynString&lt;256&gt;</code>) twice. Invert the last two stages instead: sort the lightweight <code>Staged</code> records, then splice directly into <code>interaction-&gt;description</code> / <code>-&gt;choices</code> via the existing add functions. Same output, no new interpolate, no fragment buffers, and the space-joining in <code>interaction_add_text</code> keeps working because emission happens in final order.</p>
+  </div>
+
+  <div class="pitfall high" id="p5">
+    <h3>P5 · <code>Nil</code> vs <code>Root</code> — two names for the primary target<span class="sev high">design</span></h3>
+    <p>Today <code>Nil</code> <em>means</em> "one instance, about the interaction's target" — which is exactly what <code>Root</code> now says. If both survive on compiled defs, the instancer must emit two identical entries and every scope-keyed lookup handles a duplicate. Decide the boundary: <code>scope_compile</code> normalizes empty/<code>nil</code>/<code>root</code> spellings to <code>Scope::Root</code>, and <code>Nil</code> becomes the ZII placeholder that never appears on a compiled def (a zeroed, never-compiled def stays inert — consistent with ZII). Update the enum comment and the <code>data/interactions.txt</code> header comment when this lands.</p>
+  </div>
+
+  <div class="pitfall med" id="p6">
+    <h3>P6 · Unwired vecs fault on first push<span class="sev med">mechanical</span></h3>
+    <p>The sketch declares <code>vec::Vec&lt;ScopeEntry&gt; instanced_scopes;</code> bare. A ZII vec is valid to read but <code>push</code> on one faults by design ("a null arena is a budgeting bug"). Every staging vec needs <code>vec::make_vec(&amp;game-&gt;arena, cap)</code> under the existing <code>ScratchArena</code> watermark — which also means good capacity hints are free: <code>children_of(...).len</code> is known before allocating entries, and staged counts are bounded by defs × entries.</p>
+  </div>
+
+  <div class="pitfall med" id="p7">
+    <h3>P7 · The write-first / roll-back dance is load-bearing<span class="sev med">invariant</span></h3>
+    <p>The interaction header (<code>active</code>, <code>subject</code>, <code>target</code>, <code>title</code>) is written <em>before</em> <code>facts_compute</code> because fact producers read the situation from the World — <code>fact_produce_target_kind</code> reads <code>world-&gt;interaction.target</code>. A tidy-minded rewrite that defers all writes until after the gate breaks fact production. Keep the dance: write the header, compute facts, stage; if either instance count is zero, LOG and <code>world-&gt;interaction = {}</code>. The staged pipeline actually improves the gate — counts are known before any text is spliced — and the <code>choices</code> 255-cap overflow can LOG once with exact counts instead of a flag.</p>
+  </div>
+
+  <div class="pitfall med" id="p8">
+    <h3>P8 · Don't let the interim states reorder output<span class="sev med">sequencing</span></h3>
+    <p>Stage 0 (defs re-sorted by scope) and stage 4 (order restored) cancel each other out. If the compile-time sort lands while the old file-order emit loops still run, every prompt reorders in the interim — corpus stays green (it plays blind) but recorded command streams and eyeballs both notice. The def sort and the reorder must land in the same commit (see §8).</p>
+  </div>
+
+  <div class="pitfall med" id="p9">
+    <h3>P9 · Small mechanical notes<span class="sev med">mechanical</span></h3>
+    <ul>
+      <li><code>Scope</code> needs a <code>Count</code> terminator for the per-scope runs array (house enum style already does this elsewhere).</li>
+      <li>Spelling in the sketch: <code>VarInstace</code>, "interaciton", "definitin", "buidl" — and reuse <code>TemplateVar</code> for the row payload rather than a new <code>{key, value}</code> twin.</li>
+      <li>Scoped def over an empty set must still contribute zero instances (empty <code>Occupants</code> run — falls out naturally, but keep the corpus case in mind).</li>
+      <li>Per-kind position counters, not a global one: description and choice list order independently, and per-kind keeps positions dense.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="cuts">
+  <h2><span class="n">§ 6</span>Sharper cuts — same design, less machinery</h2>
+  <p>Each proposal keeps the intended architecture (scopes instanced once, defs join, vars in a table) and removes one piece of scaffolding.</p>
+
+  <h3>A · Entries sorted by construction</h3>
+  <p>Instantiate scopes in enum order — <code>Root</code>, then <code>Occupants</code> — and the entries vec is grouped by scope with zero sort calls. Kills the <code>ScopeEntry</code> comparator (and P2 with it). <code>children_of</code> is walked exactly once per start, down from once per scoped def.</p>
+
+  <h3>B · A runs array instead of a merge join</h3>
+  <p>Record where each scope's entries start and end while building them. The "match defs against scope instances" step becomes an array lookup — no cursors, no join logic to test:</p>
+  <pre><code>Array&lt;Slice&lt;ScopeEntry&gt;, (usize)Scope::Count&gt; runs = {};
+<span class="cm">// stage 1 fills entries in enum order and sets runs[s] over each group</span>
+
+<span class="kw">for</span> (<span class="kw">const</span> TextDef&amp; def : game-&gt;interactions.texts) {
+    <span class="kw">if</span> (!facts_match(def.trigger.required, facts)) <span class="kw">continue</span>;
+    Slice&lt;ScopeEntry&gt; run = runs[(u32)def.scope];
+    <span class="kw">for</span> (usize i = 0; i &lt; run.len; i++) { <span class="cm">// stage 3+: stage or emit (def, entry, ordinal=i)</span> }
+}</code></pre>
+
+  <h3>C · Sort references, splice last</h3>
+  <p>The fix for P4, restated as a design rule: the only things staged are 16-byte <code>Staged</code> PODs; strings are spliced once, at emit time, into their final <code>DynString</code> destinations through the untouched <code>interaction_add_text</code>/<code>interaction_add_choice</code>. No new interpolate variant, no double-copied <code>Choice</code>, and the sort moves 16-byte records instead of 270-byte ones.</p>
+
+  <h3>D · The honest question: is the scope sort + reorder needed at all?</h3>
+  <p>With the runs array, a def finds its entries by lookup — it no longer matters whether defs are sorted by scope. Iterating defs in <strong>file order</strong> over <code>runs[def.scope]</code> emits authored order <em>by construction</em>: no position field, no compile-time sort, no stage-4 reorder, and P3/P8 evaporate. The var table still amortizes per-entry work, so scope-sorted defs buy nothing at runtime unless iteration flips entry-major (it doesn't need to — vars are precomputed) or scope instantiation becomes lazy (instantiate only scopes some surviving def uses — plausible later, not needed now).</p>
+  <div class="rec">
+    <span class="tag">recommendation</span>
+    <p>Land stages 1–2 plus B and C first — that is ~80% of the win (single instancer, var table, both branch forks deleted) with none of the ordering risk. Add position/sort/reorder (stages 0 and 4) only if a concrete need appears: lazy scope instantiation, or def counts large enough that scope-major batching measurably matters. The staged shape is a fine end state; it just shouldn't be the first commit.</p>
+  </div>
+
+  <h3>E · Keep compile-time work at compile time</h3>
+  <p>If the def sort stays in the plan (D notwithstanding): positions assigned at parse, sort in <code>interactions_compile</code> once per load/hot-reload — never per start. Already the sketch's intent; stated here so it survives implementation.</p>
+
+  <h3>F · The end state this sets up: <code>SCOPE_DEFS</code></h3>
+  <p>Once scope instantiation and variable production live in one place each, they are one step from the <code>FACT_DEFS</code> pattern — a table row per scope: <code>{key, instantiate(game, target, out_entries), vars(world, entry, out_vars)}</code>, with <code>scope_compile</code> walking keys and "adding a scope is one row and its hooks." Don't build it for two scopes; build it when the third arrives and the shape has proven itself (rule of three). The pipeline above makes that refactor mechanical when the day comes.</p>
+</section>
+
+<section id="budget">
+  <h2><span class="n">§ 7</span>Cost budget</h2>
+  <p>With N defs (currently 3 texts + 4 choices), K occupants, E = 1 + K entries, I ≤ N · max(1, K) instances — all staging under one <code>ScratchArena</code> watermark on <code>game-&gt;arena</code>:</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>piece</th><th>size / cost</th><th>vs today</th></tr></thead>
+      <tbody>
+        <tr><td>entries</td><td class="num">E × ~24 B (scope, Id, var slice)</td><td>new, trivial</td></tr>
+        <tr><td>var table</td><td class="num">2E × 32 B (TemplateVar rows)</td><td>replaces per-instance stack arrays</td></tr>
+        <tr><td>staged records</td><td class="num">I × 16 B, only if stage 4 kept</td><td>new; C keeps them index-only</td></tr>
+        <tr><td><code>children_of</code></td><td class="num">1 walk per start</td><td>was 1 per scoped def</td></tr>
+        <tr><td><code>resolve_name</code></td><td class="num">E + 1 calls</td><td>was per def × element</td></tr>
+        <tr><td>sorts</td><td class="num">compile O(N log N); start O(I log I) — zero if D taken</td><td>none today</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Everything is noise at this scale — the budget exists to show the reshape costs nothing, not to justify it on speed. The payoff is structural: adding scope #3 or variable #3 touches one stage instead of four branches.</p>
+</section>
+
+<section id="order">
+  <h2><span class="n">§ 8</span>Implementation order</h2>
+  <p>Four steps, each independently landable with the corpus test green and a manual Town1 prompt identical before and after (<code>./x.sh test</code>, then run and press <code>R</code> to hot-reload data):</p>
+  <ol>
+    <li><strong>Compile side, order-neutral.</strong> <code>Scope::Root</code> semantics per P5 (normalize in <code>scope_compile</code>, accept a <code>root</code> spelling), <code>Scope::Count</code>, position fields captured at push. Defs stay in file order; old loops untouched. Behavior identical.</li>
+    <li><strong>Instancer + var table.</strong> Stages 1–2 with cuts A/B: entries built in enum order, runs array, per-entry var slices. Rewrite the two def loops to iterate <code>runs[def.scope]</code> handing <code>entry.vars</code> to the existing add functions — both scope forks and all four <code>TemplateVar</code> rebuild sites delete. Output order unchanged (defs still file-major).</li>
+    <li><strong>Staging + reorder — only if D decides for it.</strong> Def sort by <code>(scope, position)</code> in <code>interactions_compile</code>, <code>Staged</code> records, stage-4 sort by <code>(position, ordinal)</code>, emit loop. One commit — interim states reorder prompts (P8).</li>
+    <li><strong>Prose.</strong> Rewrite the <code>interaction_start</code> header comment (it describes the loop shape), the <code>Scope</code> enum comment, and the <code>data/interactions.txt</code> header; delete the sketch block.</li>
+  </ol>
+</section>
+
+<section id="decisions">
+  <h2><span class="n">§ 9</span>Open decisions</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>#</th><th>decision</th><th>options</th><th>recommendation</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="num">D1</td>
+          <td><code>Nil</code> vs <code>Root</code></td>
+          <td>both live on compiled defs · normalize to <code>Root</code> at compile</td>
+          <td>Normalize: <code>Nil</code> is ZII-only, never compiled (P5).</td>
+        </tr>
+        <tr>
+          <td class="num">D2</td>
+          <td>Authorable <code>root</code> spelling in data files</td>
+          <td>yes · internal only</td>
+          <td>Yes — one line in <code>scope_compile</code>, makes the default explicit for authors.</td>
+        </tr>
+        <tr>
+          <td class="num">D3</td>
+          <td>Def storage order</td>
+          <td>scope-sorted + reorder (as sketched) · file-order + runs lookup</td>
+          <td>File-order now (§6-D); revisit when lazy instantiation or a third scope lands.</td>
+        </tr>
+        <tr>
+          <td class="num">D4</td>
+          <td>Reorder sort mechanics (if D3 = sorted)</td>
+          <td><code>unstable</code> on <code>(position, ordinal)</code> · <code>stable</code> + scratch on position</td>
+          <td>Composite-key <code>unstable</code> — unique keys, deterministic, no scratch.</td>
+        </tr>
+        <tr>
+          <td class="num">D5</td>
+          <td>Position counters</td>
+          <td>per kind · global across records</td>
+          <td>Per kind — the two output lists order independently (P9).</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer class="doc">
+  imperium-cpp · docs/interaction-start-pipeline.html · written 2026-07-23 against the uncommitted sketch in src/game.hpp · companion to docs/spatial-design.html
+</footer>
+
+</div>
+</body>
+</html>

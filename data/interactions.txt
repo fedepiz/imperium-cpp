@@ -5,7 +5,8 @@
 # into the prompt's description (file order, space-joined); `choice`
 # records union into its choice list (file order). A trigger's named
 # fields must each equal the computed fact (AND); an absent field matches
-# anything. The prompt's title is the target's name. Press R in-game to
+# anything. A record with no scope reads as `scope = root` — the met thing
+# itself. The prompt's title is the target's name. Press R in-game to
 # hot-reload.
 
 text = {
