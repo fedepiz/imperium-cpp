@@ -745,7 +745,8 @@ fn Slice<String> interactions_load(InteractionDefs* in, String path) {
 fn b32 facts_match(Slice<Fact> required, Slice<Fact> facts) {
     usize at = 0;
     for (Fact req : required) {
-        while (at < facts.len && fact_less(facts[at], req)) at++;
+        while (at < facts.len && fact_less(facts[at], req))
+            at++;
         if (at == facts.len || !(facts[at] == req)) return false;
     }
     return true;
@@ -1598,8 +1599,8 @@ fn ScopeEntry scope_entry_make(Arena* arena, Id target, String target_name, Stri
     vec::push(&rows, {"TARGET", target_name});
     vec::push(&rows, {"SUBJECT", subject_name});
     ScopeEntry entry = {};
-    entry.target = target;
-    entry.vars   = vec::slice(rows);
+    entry.target     = target;
+    entry.vars       = vec::slice(rows);
     return entry;
 }
 
@@ -1647,35 +1648,35 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     ChildrenView<Thing> occupants = children_of(game, Hierarchy::LocationOf, target_id);
 
     Array<vec::Vec<ScopeEntry>, (usize)Scope::Count> runs = {};
-    runs[(usize)Scope::Root]      = vec::make_vec<ScopeEntry>(&game->arena, 1);
-    runs[(usize)Scope::Occupants] = vec::make_vec<ScopeEntry>(&game->arena, occupants.len);
+    runs[(usize)Scope::Root]                              = vec::make_vec<ScopeEntry>(&game->arena, 1);
+    runs[(usize)Scope::Occupants]                         = vec::make_vec<ScopeEntry>(&game->arena, occupants.len);
 
     vec::push(&runs[(usize)Scope::Root], scope_entry_make(&game->arena, target_id, target_name, subject_name));
-    for (Thing* element : occupants) {
+    for (auto* element : occupants) {
         vec::push(&runs[(usize)Scope::Occupants],
                   scope_entry_make(&game->arena, element->id, resolve_name(world, element->name), subject_name));
     }
 
     usize text_count = 0;
-    for (const TextDef& def : game->interactions.texts) {
+    for (const auto& def : game->interactions.texts) {
         if (!facts_match(def.trigger.required, facts)) continue;
-        for (const ScopeEntry& entry : runs[(usize)def.scope]) {
+        for (const auto& entry : runs[(usize)def.scope]) {
             interaction_add_text(interaction, def.text, entry.vars);
             text_count++;
         }
     }
 
     b32 choices_full = false;
-    for (const ChoiceDef& def : game->interactions.choices) {
+    for (const auto& def : game->interactions.choices) {
         if (!facts_match(def.trigger.required, facts)) continue;
-        for (const ScopeEntry& entry : runs[(usize)def.scope]) {
+        for (const auto& entry : runs[(usize)def.scope]) {
             choices_full = !interaction_add_choice(interaction, &def, entry.target, entry.vars) || choices_full;
         }
     }
     if (choices_full) { LOG("interaction: choice list full — instances dropped"); }
 
     if (!text_count || !interaction->choices.len) {
-        const BodyKind* body = &BODY_KINDS[target->body_kind_idx];
+        const auto* body = &BODY_KINDS[target->body_kind_idx];
         LOG("interaction: no %s for a meeting with kind '%.*s'", text_count ? "choices" : "text", (int)body->name.len,
             body->name.data);
         world->interaction = {};
