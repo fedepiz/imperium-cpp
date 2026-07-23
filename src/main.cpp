@@ -177,6 +177,13 @@ fn void load_ui(ui::Ui* hud) {
     }
 }
 
+// The interaction defs reload the same way (initialize did the first load).
+fn void load_interactions(game::Game* game) {
+    for (String problem : game::interactions_load(&game->interactions, "data/interactions.txt")) {
+        LOG("interactions: %.*s", (int)problem.len, problem.data);
+    }
+}
+
 // Placeholder sim state the demo UI drives; a real sim replaces this.
 struct TimeState {
     b32 paused;
@@ -203,12 +210,12 @@ fn usize time_tick(TimeState* state, f32 delta) {
 
 // The data the script's $VARs bind against, rebuilt every frame from
 // whatever state the game has. Formatted strings land in the frame arena.
-// A forced pause reads as paused and locks every time control — the player
-// cannot unpause over the sim's hold.
-fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time, b32 forced_pause) {
-    b32 paused = time->paused || forced_pause;
+// A held clock (sim prompt, travel picker) reads as paused and locks every
+// time control — the player cannot unpause over the hold.
+fn void fill_ui_data(ui::data::Data* data, arena::Arena* frame, const TimeState* time, b32 time_held) {
+    b32 paused = time->paused || time_held;
     ui::data::bind_global(data, "TIME_BUTTON", paused ? "Paused" : "Playing");
-    ui::data::bind_global(data, "TIME_ENABLED", !forced_pause);
+    ui::data::bind_global(data, "TIME_ENABLED", !time_held);
     // $HAS_PLAYER and $INTERACTION stay unbound: those panels stay hidden.
 
     // Speed buttons, one list row per level: the current level is the one
@@ -230,16 +237,17 @@ struct TargetPick {
 
 // Binds the picked cell's things as travel targets. The panel hides when
 // nothing but the player stands there; ids cross the action wire in
-// parse_command's "travel_to = { slot generation }" form.
-fn void fill_target_data(ui::data::Data* data, arena::Arena* frame, const game::Game* game, TargetPick pick) {
-    if (!pick.open) return;
+// parse_command's "travel_to = { slot generation }" form. Returns whether
+// the panel is actually showing — the caller holds time while it is.
+fn b32 fill_target_data(ui::data::Data* data, arena::Arena* frame, const game::Game* game, TargetPick pick) {
+    if (!pick.open) return false;
     const game::World* world = &game->world;
 
     usize count = 0;
     for (const game::Thing* thing : game::occupants_of(&game->spatial, world, pick.cell)) {
         count += thing->id == world->player ? 0 : 1;
     }
-    if (!count) return;
+    if (!count) return false;
 
     ui::data::bind_global(data, "TARGETS", true);
     ui::data::begin_list(data, "targets");
@@ -250,6 +258,7 @@ fn void fill_target_data(ui::data::Data* data, arena::Arena* frame, const game::
                        string::format(frame, "{ %d %d }", (int)thing->id.slot, (int)thing->id.generation));
         ui::data::bind(data, "TARGET_NAME", game::resolve_name(world, thing->name));
     }
+    return true;
 }
 
 // Turns one interpolated action string into a Command. The action is the
@@ -365,11 +374,12 @@ int main() {
 
         // Last tick's verdict: an open interaction holds time for the whole
         // frame — the UI shows the hold, and the delta below zeroes out.
-        b32 forced_pause = game::forced_pause(game);
-
-        auto ui_data = game::extract_ui_data(&frame_arena, game);
-        fill_ui_data(&ui_data, &frame_arena, &time, forced_pause);
-        fill_target_data(&ui_data, &frame_arena, game, pick);
+        // The travel picker holds it the same way: both are decisions the
+        // world waits on.
+        auto ui_data   = game::extract_ui_data(&frame_arena, game);
+        b32  picking   = fill_target_data(&ui_data, &frame_arena, game, pick);
+        b32  time_held = game::forced_pause(game) || picking;
+        fill_ui_data(&ui_data, &frame_arena, &time, time_held);
 
         ui::Input input     = {};
         input.bounds        = {0, 0, (f32)config.screen_width, (f32)config.screen_height};
@@ -407,7 +417,10 @@ int main() {
 
         for (const auto& command : commands) {
             if (command.log_msg.len) LOG("command: %.*s", (int)command.log_msg.len, command.log_msg.data);
-            if (command.reload_ui) load_ui(&hud);
+            if (command.reload_ui) {
+                load_ui(&hud);
+                load_interactions(game);
+            }
             time_update(&time, command.time);
             if (command.camera_move.x != 0 || command.camera_move.y != 0) free_look = true;
             if (command.follow_player) free_look = false;
@@ -435,7 +448,7 @@ int main() {
         render_ui_commands(ui_frame.commands, font.id);
         ray::frame_end();
 
-        usize num_days = time_tick(&time, ray::frame_time() * !forced_pause);
+        usize num_days = time_tick(&time, ray::frame_time() * !time_held);
 
         game::TickCommands tick_commands = {
             .commands = vec::slice(game_commands),

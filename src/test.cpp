@@ -807,6 +807,220 @@ fn b32 test_game_movement_orders() {
     return true;
 }
 
+// The interactions format, matcher, and composition, as wire contracts:
+// all sources are inline and authored here, so asserting their compiled
+// shape freezes the format, not the game's content.
+fn b32 test_game_interactions() {
+    arena::Arena a = {};
+    arena::reserve(&a, 64 * 1024 * 1024);
+
+    u8 town   = game::lookup_body_kind("town");
+    u8 person = game::lookup_body_kind("person");
+
+    // The schema compiles to typed defs; absent trigger fields stay zero.
+    {
+        game::Interactions in     = {};
+        const char*        source = "text = {\n"
+                                    "    trigger = { target_kind = town }\n"
+                                    "    text = \"Gates of $TARGET.\"\n"
+                                    "}\n"
+                                    "text = { text = \"Hail.\" }\n"
+                                    "choice = {\n"
+                                    "    trigger = { target_kind = town }\n"
+                                    "    text = \"Enter\"\n"
+                                    "    action = enter\n"
+                                    "}\n"
+                                    "choice = { text = \"Move on\" }\n";
+        Slice<String> problems = game::interactions_compile(&in, source);
+        CHECK(problems.len == 0 && in.texts.len == 2 && in.choices.len == 2);
+        CHECK(in.texts[0].trigger.target_kind == town);
+        CHECK(in.texts[1].trigger.target_kind == 0);
+        CHECK(in.choices[0].action == game::Action::Enter && in.choices[0].trigger.target_kind == town);
+        CHECK(in.choices[1].action == game::Action::Nil);
+        arena::release(&in.arena);
+    }
+
+    // The trigger contract: named fields must equal the facts; zero fields
+    // accept anything.
+    {
+        game::TriggerDef specific = {town};
+        game::TriggerDef anything = {};
+        CHECK(game::trigger_accepts(specific, town));
+        CHECK(!game::trigger_accepts(specific, person));
+        CHECK(game::trigger_accepts(anything, person));
+        CHECK(game::trigger_accepts(anything, 0));
+    }
+
+    // Unknown names are load problems; a record with a broken trigger is
+    // dropped whole (a typo must not widen a fragment onto every prompt),
+    // while broken non-trigger fields only report.
+    {
+        game::Interactions in     = {};
+        const char*        source = "text = {\n"
+                                    "    trigger = { event = meet  target_kind = castle  colour = red }\n"
+                                    "    text = \"broken\"\n"
+                                    "}\n"
+                                    "choice = { text = \"Fly\"  action = fly  speed = 9  scope = everywhere }\n"
+                                    "interaction = { }\n";
+        Slice<String> problems = game::interactions_compile(&in, source);
+        CHECK(problems.len >= 6);
+        CHECK(in.texts.len == 0);
+        CHECK(in.choices.len == 1 && in.choices[0].action == game::Action::Nil);
+        CHECK(in.choices[0].scope == game::Scope::Nil);
+        arena::release(&in.arena);
+    }
+
+    // Interpolation: appends, substitutes, unknown $NAMEs keep their
+    // spelling, and overflow ends at a segment boundary — never inside
+    // half a name.
+    {
+        game::TemplateVar        vars[] = {{"TARGET", "Roma"}, {"SUBJECT", "Gaius"}};
+        Slice<game::TemplateVar> vs     = slice(vars);
+
+        DynString<64> out = {};
+        game::interpolate(&out, "Gates of $TARGET, ", vs);
+        game::interpolate(&out, "$SUBJECT. $UNKNOWN stays.", vs);
+        CHECK(String(out) == "Gates of Roma, Gaius. $UNKNOWN stays.");
+
+        DynString<8> small = {};
+        game::interpolate(&small, "abc $TARGET $SUBJECT", vs);
+        CHECK(String(small) == "abc Roma");
+    }
+
+    // Fire contract: a meeting with no records opens no prompt; matching
+    // fragments compose — texts concatenate in file order, choices union —
+    // and a resolved choice closes. Re-ordering travel to a co-resident
+    // goal still ends in a Meet (a completed order always makes contact),
+    // so the prompt can re-open without a step.
+    {
+        auto* g = make_test_game(&a, 8, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        game::Thing* player  = spawn_bodied(w, "person", 1, 1);
+        game::Thing* stander = spawn_bodied(w, "person", 2, 1);
+        game::Thing* other   = spawn_bodied(w, "person", 4, 1);
+        (void)stander;
+        w->player = player->id;
+        game_ready(g);
+
+        game::order_move(w, player->id, other->id);
+        tick_day(g); // steps onto the stander: a Meet with no records
+        CHECK(!w->interaction.active);
+
+        Slice<String> problems = game::interactions_compile(
+            &g->interactions, "text = { trigger = { target_kind = person } text = \"A person.\" }\n"
+                              "text = { text = \"Contact.\" }\n"
+                              "choice = { text = \"Ok\" }\n"
+                              "choice = { text = \"Also\" }\n");
+        CHECK(problems.len == 0);
+
+        tick_day(g); // an empty cell: no collision, no prompt
+        CHECK(!w->interaction.active);
+        tick_day(g); // steps onto the dest: the Meet prompts, composed
+        CHECK(w->interaction.active);
+        CHECK(String(w->interaction.description) == "A person. Contact.");
+        CHECK(w->interaction.choices.len == 2);
+        send_choice(g, 1);
+        CHECK(!w->interaction.active);
+
+        // The deliberate re-engage: same cell, fresh order, no step — the
+        // zero-length arrival's Meet re-opens the prompt.
+        game::order_move(w, player->id, other->id);
+        tick_day(g);
+        CHECK(w->interaction.active);
+        send_choice(g, 1);
+        CHECK(!w->interaction.active);
+        arena::release(&g->arena);
+    }
+
+    // Meetings are symmetric: someone walking INTO the player raises the
+    // same player-first interaction.
+    {
+        auto* g = make_test_game(&a, 8, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        game::Thing* player = spawn_bodied(w, "person", 3, 1);
+        game::Thing* walker = spawn_bodied(w, "person", 1, 1);
+        game::Thing* town_t = spawn_bodied(w, "town", 6, 1);
+        w->player           = player->id;
+        game_ready(g);
+
+        Slice<String> problems =
+            game::interactions_compile(&g->interactions, "text = { text = \"Hi.\" }\nchoice = { text = \"Ok\" }\n");
+        CHECK(problems.len == 0);
+
+        game::order_move(w, walker->id, town_t->id);
+        tick_day(g);
+        tick_day(g); // the walker steps onto the player's cell
+        CHECK(w->interaction.active);
+        CHECK(w->interaction.subject == player->id && w->interaction.target == walker->id);
+        send_choice(g, 1);
+        arena::release(&g->arena);
+    }
+
+    // Scoped fragments expand per element of their set, in slot order; an
+    // instance's $TARGET and its choice's action target are that element,
+    // so resolving "Greet X" hops the prompt to X. Scoped records over an
+    // empty set contribute no instances, and the prompt gate counts
+    // instances, not records.
+    {
+        auto* g = make_test_game(&a, 8, 3);
+        auto* w = &g->world;
+        paint_road(w, 1, 1, 6, 1);
+        game::Thing* player = spawn_bodied(w, "person", 1, 1);
+        game::Thing* town_t = spawn_bodied(w, "town", 3, 1);
+        game::Thing* alice  = spawn_bodied(w, "person", 3, 1);
+        game::Thing* bob    = spawn_bodied(w, "person", 3, 1);
+        game::Thing* empty  = spawn_bodied(w, "town", 5, 1);
+        (void)empty;
+        alice->name = game::define_name(w, "Alice");
+        bob->name   = game::define_name(w, "Bob");
+        w->player   = player->id;
+        game_ready(g);
+        game::enter_container(&g->spatial, w, alice->id, town_t->id);
+        game::enter_container(&g->spatial, w, bob->id, town_t->id);
+        game::hierarchy_refresh(g);
+
+        Slice<String> problems = game::interactions_compile(
+            &g->interactions,
+            "text = { text = \"Base.\" }\n"
+            "text = { trigger = { target_kind = town } scope = occupants text = \"$TARGET is here.\" }\n"
+            "choice = { trigger = { target_kind = town } scope = occupants text = \"Greet $TARGET\" action = meet }\n"
+            "choice = { text = \"Leave\" }\n");
+        CHECK(problems.len == 0);
+        CHECK(g->interactions.texts[1].scope == game::Scope::Occupants);
+
+        game::order_move(w, player->id, town_t->id);
+        tick_day(g);
+        tick_day(g); // steps onto the town: the Meet prompts, expanded
+        CHECK(w->interaction.active);
+        CHECK(String(w->interaction.description) == "Base. Alice is here. Bob is here.");
+        CHECK(w->interaction.choices.len == 3); // Greet Alice, Greet Bob, Leave
+        CHECK(String(w->interaction.choices[0].text) == "Greet Alice");
+
+        send_choice(g, 1); // Greet Alice: the Meet action hops the prompt
+        CHECK(w->interaction.active && w->interaction.target == alice->id);
+        CHECK(String(w->interaction.title) == "Alice");
+        CHECK(String(w->interaction.description) == "Base."); // no town fragments about a person
+        CHECK(w->interaction.choices.len == 1);
+        send_choice(g, 1);
+        CHECK(!w->interaction.active);
+
+        // The empty town: base fragments still prompt, zero scoped instances.
+        game::order_move(w, player->id, empty->id);
+        tick_day(g);
+        tick_day(g);
+        CHECK(w->interaction.active);
+        CHECK(String(w->interaction.description) == "Base.");
+        CHECK(w->interaction.choices.len == 1); // just Leave
+        send_choice(g, 1);
+        arena::release(&g->arena);
+    }
+
+    arena::release(&a);
+    return true;
+}
+
 // The corpus test: the real data files load with zero problems, and the sim
 // survives being played blind — the player ordered somewhere via the click
 // wire, days ticked, every prompt resolved sight unseen — with the world
@@ -822,6 +1036,13 @@ fn b32 test_game_corpus() {
 
     CHECK(w->world_map.width > 0 && w->world_map.height > 0);
     CHECK(game::validate(g) == 0);
+
+    // The shipping content loads clean. This reload on top of initialize's
+    // first load also exercises the arena reset path.
+    Slice<String> problems = game::interactions_load(&g->interactions, "data/interactions.txt");
+    for (String problem : problems) { printf("\n  %.*s", (int)problem.len, problem.data); }
+    CHECK(problems.len == 0);
+    CHECK(g->interactions.texts.len > 0 && g->interactions.choices.len > 0);
 
     // The click wire: "travel_to = { slot generation }" parses into the
     // command that orders the player — aimed at the first bodied thing
@@ -2066,6 +2287,7 @@ const Test TESTS[] = {
     {"game_spatial", test_game_spatial},
     {"game_pathfinding", test_game_pathfinding},
     {"game_movement_orders", test_game_movement_orders},
+    {"game_interactions", test_game_interactions},
     {"game_corpus", test_game_corpus},
     {"ui_grow", test_ui_grow},
     {"ui_compress", test_ui_compress},

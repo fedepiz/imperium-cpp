@@ -176,8 +176,8 @@ struct MoveOrder {
     // Fractional step budget, in cells. Gains BodyKind::speed per day, capped
     // at 1 (max speed is one cell per day); a step costs 1.
     f32 points;
-    // What arriving executes. The player's collisions raise a prompt instead
-    // of auto-executing, so their orders usually carry Nil.
+    // What arriving executes. The player's travel orders carry Nil — their
+    // meetings raise the interaction instead.
     Action action;
 };
 
@@ -223,7 +223,10 @@ enum ChoiceToggle : u8 {
 struct Choice {
     DynString<256> text;
     Action         action;
-    ChoiceToggle   toggle;
+    // Who the action acts on, filled at composition — the interaction's target
+    // for plain records, the expanded element for scoped ones.
+    Id           target;
+    ChoiceToggle toggle;
 };
 
 struct Interaction {
@@ -238,15 +241,6 @@ struct Interaction {
     Id                    target;
     DynArray<Choice, 255> choices;
 };
-
-fn void add_choice(Interaction* interaction, String text, Action action, ChoiceToggle toggle) {
-    if (push(&interaction->choices, {})) {
-        Choice* choice = &interaction->choices[interaction->choices.len - 1];
-        choice->text   = text;
-        choice->action = action;
-        choice->toggle = toggle;
-    }
-}
 
 // Authoritative game state. ZII: the all-zero world is valid and empty —
 // slot 0 is the permanently-zeroed dummy, the first spawn takes slot 1.
@@ -432,29 +426,243 @@ struct HierarchyIndex {
     Array<u16, NUM_ENTITIES>     children;
 };
 
-enum class EventKind : u32 {
-    Nil,     // zero — ZII default
-    Meet,    // a stepped into b's cell
-    Arrival, // a completed its move order at b (its dest)
-};
-
-// Fat ZII payload, the Command pattern: kind selects the field roles —
-// a is always the mover whose step emitted the event; b is the other party
-// (Meet) or the ordered destination (Arrival). Meeting something and
-// finishing an order are independent facts: one step may emit both, and the
-// stream keeps them in emission order.
+// One thing acting on another. Events are consumed uniformly — execute
+// the action, log — so the action IS the event's meaning, and emission
+// order is the day's record. One step may emit several: a meeting and an
+// order completion are independent facts.
 struct Event {
-    EventKind kind;
-    Id        subject;
-    Id        target;
-    CellPos   cell;
-    // The emitting order's carried intent, captured here because the step
-    // clears the order before the event loop consumes it.
-    Action action;
+    Id      subject;
+    Id      target;
+    CellPos cell;
+    Action  action;
 };
 
 constexpr usize MAX_EVENTS      = 1024;
 constexpr usize GAME_ARENA_SIZE = 64 * MB; // vmem reserve; committed stays ~9MB at the map cap
+
+// --- Interactions (data-driven meetings) --------------------------------------
+//
+// "Data names things, code computes things": data/interactions.txt is a sea
+// of fragment records compiled here into typed defs. A trigger's nonzero
+// fields must each equal the fact the sim computed (AND); zero/absent =
+// wildcard — no expressions, no operators. New expressiveness means new
+// code-computed fact fields, never a query language.
+//
+// Fragments COMPOSE instead of bundling: every matching text record
+// concatenates into the interaction's description, every matching choice
+// is offered. Orthogonal dimensions (what happened x what the target
+// affords) stay N + M records instead of N x M bundles.
+
+constexpr usize INTERACTIONS_ARENA_SIZE = 1 * MB;
+
+struct TriggerDef {
+    u8 target_kind; // BODY_KINDS index; 0 = any
+};
+
+// What a fragment record expands over. Nil = one instance, about the
+// interaction's target; anything else names a code-computed set — one
+// per element, and the instance's $TARGET and action target both become
+// that element. Iteration lives in code; data names the set.
+enum class Scope : u32 {
+    Nil,
+    Occupants, // the things contained in the interaction's target (LocationOf)
+};
+
+struct TextDef {
+    TriggerDef trigger;
+    Scope      scope;
+    String     text; // template ($VARs); aliases the interactions arena
+};
+
+struct ChoiceDef {
+    TriggerDef trigger;
+    Scope      scope;
+    String     text; // the choice's label, a template too
+    Action     action;
+};
+
+// Content, not state: lives on Game, never in World — saves carry no
+// content, so replays run against whatever the current files say.
+struct Interactions {
+    Arena            arena;   // reset by every load; defs and their strings live here
+    Slice<TextDef>   texts;   // file order — every matching record contributes
+    Slice<ChoiceDef> choices; // file order — every matching record is offered
+};
+
+// A meeting whose interaction has not started yet. Effects mutate the
+// world freely, so interactions never start where they are triggered:
+// they queue, the tick settles, then the queue starts them. Interactions
+// are written from the player's POV — subject the player, target the
+// other party.
+struct PendingInteraction {
+    Id subject;
+    Id target;
+};
+
+// One interpolation variable, spelled without the '$'.
+struct TemplateVar {
+    String name;
+    String value;
+};
+
+fn b32 template_word_byte(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// Append the template to dest, substituting each $NAME from vars — append,
+// not overwrite, so several fragments can build one description. An unknown
+// $NAME keeps its literal spelling, so a typo shows on screen instead of
+// vanishing. Appends are per-segment all-or-nothing: on overflow the output
+// ends at a segment boundary, never inside a half-substituted name (LOGged).
+template <const usize N> fn void interpolate(DynString<N>* dest, String tmpl, Slice<TemplateVar> vars) {
+    b32   truncated = false;
+    usize at        = 0;
+    while (at < tmpl.len) {
+        usize run = at;
+        while (run < tmpl.len && tmpl.data[run] != '$')
+            run++;
+        if (run > at) {
+            if (!append(dest, string::substring(tmpl, at, run - at))) { truncated = true; }
+            at = run;
+            continue;
+        }
+
+        usize name_end = at + 1;
+        while (name_end < tmpl.len && template_word_byte(tmpl.data[name_end]))
+            name_end++;
+        String name = string::substring(tmpl, at + 1, name_end - at - 1);
+        String out  = string::substring(tmpl, at, name_end - at); // the literal $NAME fallback
+        for (const TemplateVar& var : vars) {
+            if (var.name == name) {
+                out = var.value;
+                break;
+            }
+        }
+        if (!append(dest, out)) { truncated = true; }
+        at = name_end;
+    }
+    if (truncated) { LOG("interpolate: output truncated (%d byte cap)", (int)N); }
+}
+
+// Parse a scope name ("scope = occupants"). Empty and "nil" are the
+// explicit no-scope; unknown names report and read as Nil.
+fn Scope scope_compile(Arena* arena, vec::Vec<String>* problems, String name) {
+    if (!name.len || name == String("nil")) return Scope::Nil;
+    if (name == String("occupants")) return Scope::Occupants;
+    vec::push(problems, string::format(arena, "unknown scope '%.*s'", (int)name.len, name.data));
+    return Scope::Nil;
+}
+
+// Parse one trigger block. Unknown names are problems and mark the record
+// broken — the caller drops it whole, because a typo must not silently
+// widen a fragment onto every interaction.
+fn b32 trigger_compile(Arena* arena, vec::Vec<String>* problems, const tabula::Node* node, TriggerDef* out) {
+    b32 ok = true;
+    for (const auto& fact : node->children) {
+        if (fact.key == String("target_kind")) {
+            String kind      = fact.value.text;
+            out->target_kind = lookup_body_kind(kind);
+            if (!out->target_kind) {
+                vec::push(problems, string::format(arena, "unknown target_kind '%.*s'", (int)kind.len, kind.data));
+                ok = false;
+            }
+        } else {
+            vec::push(problems,
+                      string::format(arena, "unknown trigger field '%.*s'", (int)fact.key.len, fact.key.data));
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// Compile the fragment sea from tabula source already living in (or copied
+// into) the arena. Every unknown name or field is a problem; a record whose
+// trigger had one is dropped whole. The caller owns the arena reset;
+// problems are arena-allocated and live until the next load.
+fn Slice<String> interactions_compile(Interactions* in, String source) {
+    if (!in->arena.base) { arena::reserve(&in->arena, INTERACTIONS_ARENA_SIZE); }
+    Arena* arena    = &in->arena;
+    auto   problems = vec::make_vec<String>(arena, 4);
+    auto   texts    = vec::make_vec<TextDef>(arena, 8);
+    auto   choices  = vec::make_vec<ChoiceDef>(arena, 8);
+
+    tabula::ParseResult result = tabula::parse(arena, source);
+    for (const auto& error : result.errors) {
+        vec::push(&problems, error.message);
+    }
+
+    for (const auto& root : result.roots) {
+        if (root.key == String("text")) {
+            TextDef def = {};
+            b32     ok  = true;
+            for (const auto& field : root.children) {
+                if (field.key == String("trigger")) {
+                    ok = trigger_compile(arena, &problems, &field, &def.trigger) && ok;
+                } else if (field.key == String("scope")) {
+                    def.scope = scope_compile(arena, &problems, field.value.text);
+                } else if (field.key == String("text")) {
+                    def.text = field.value.text;
+                } else {
+                    vec::push(&problems,
+                              string::format(arena, "unknown text field '%.*s'", (int)field.key.len, field.key.data));
+                }
+            }
+            if (ok) { vec::push(&texts, def); }
+        } else if (root.key == String("choice")) {
+            ChoiceDef def = {};
+            b32       ok  = true;
+            for (const auto& field : root.children) {
+                if (field.key == String("trigger")) {
+                    ok = trigger_compile(arena, &problems, &field, &def.trigger) && ok;
+                } else if (field.key == String("scope")) {
+                    def.scope = scope_compile(arena, &problems, field.value.text);
+                } else if (field.key == String("text")) {
+                    def.text = field.value.text;
+                } else if (field.key == String("action")) {
+                    String action_name = field.value.text;
+                    def.action         = action_from_name(action_name);
+                    if (def.action == Action::Nil && action_name.len && !(action_name == String("nil"))) {
+                        vec::push(&problems, string::format(arena, "unknown action '%.*s'", (int)action_name.len,
+                                                            action_name.data));
+                    }
+                } else {
+                    vec::push(&problems,
+                              string::format(arena, "unknown choice field '%.*s'", (int)field.key.len, field.key.data));
+                }
+            }
+            if (ok) { vec::push(&choices, def); }
+        } else {
+            vec::push(&problems, string::format(arena, "unknown key '%.*s'", (int)root.key.len, root.key.data));
+        }
+    }
+
+    in->texts   = vec::slice(texts);
+    in->choices = vec::slice(choices);
+    return vec::slice(problems);
+}
+
+// (Re)load the defs from a file, replacing whatever was loaded before.
+// A missing or unreadable file leaves no defs and reports one problem.
+fn Slice<String> interactions_load(Interactions* in, String path) {
+    if (!in->arena.base) { arena::reserve(&in->arena, INTERACTIONS_ARENA_SIZE); }
+    arena::reset(&in->arena);
+    in->texts   = {};
+    in->choices = {};
+
+    file_io::ReadFile<String> source = file_io::read_file_to_string(&in->arena, path);
+    if (source.messages.len) {
+        auto   problems = vec::make_vec<String>(&in->arena, 1);
+        String message  = (*source.messages.begin()).message;
+        vec::push(&problems, string::format(&in->arena, "%.*s — no interactions", (int)message.len, message.data));
+        return vec::slice(problems);
+    }
+    return interactions_compile(in, source.data);
+}
+
+// Does a trigger accept the computed facts? Zero fields accept anything.
+fn b32 trigger_accepts(TriggerDef trigger, u8 target_kind) {
+    return trigger.target_kind == 0 || trigger.target_kind == target_kind;
+}
 
 // The spatial subsystem: the live "who is where" grid plus the pathfinding
 // state that serves it. The grid is a derived-but-synced cache over
@@ -505,6 +713,13 @@ struct Game {
     // This day's movement events: cleared at day start, LOG-drained at day
     // end, left in place so tests can inspect them between ticks.
     DynArray<Event, MAX_EVENTS> events;
+
+    // Meetings waiting to start their interaction; queued by commands and
+    // events, drained once the tick settles.
+    DynArray<PendingInteraction, MAX_EVENTS> pending_interactions;
+
+    // Loaded content: data/interactions.txt compiled to defs.
+    Interactions interactions;
 };
 
 // Rebuild every stale hierarchy index: a counting sort over live things,
@@ -1054,10 +1269,10 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
             if (hashtable::get(&day->together, pair) || hashtable::get(&day->fired, pair)) continue;
             *hashtable::put(&day->fired, pair) = true;
             Event event                        = {};
-            event.kind                         = EventKind::Meet;
             event.subject                      = thing->id;
             event.target                       = other->id;
             event.cell                         = here;
+            event.action                       = Action::Meet;
             if (!push(&game->events, event) && !day->logged_full) {
                 LOG("movement: event buffer full — records dropped");
                 day->logged_full = true;
@@ -1071,8 +1286,27 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
     // target just left has not arrived.
     auto* goal_anchor = resolve_map_anchor(world, thing->move.dest);
     if (goal_anchor->id && thing->cell_pos == goal_anchor->cell_pos) {
+        // A zero-length arrival is still contact: the order deliberately
+        // engages its goal, so the Meet fires even though the pair were
+        // already together at day start — every completed order ends in a
+        // Meet with its goal anchor. Once per pair per day still holds.
+        if (!stepped && goal_anchor->id.slot != thing->id.slot) {
+            u64 pair = pack_pair(thing->id.slot, goal_anchor->id.slot);
+            if (!hashtable::get(&day->fired, pair)) {
+                *hashtable::put(&day->fired, pair) = true;
+                Event meet                         = {};
+                meet.subject                       = thing->id;
+                meet.target                        = goal_anchor->id;
+                meet.cell                          = thing->cell_pos;
+                meet.action                        = Action::Meet;
+                if (!push(&game->events, meet) && !day->logged_full) {
+                    LOG("movement: event buffer full — records dropped");
+                    day->logged_full = true;
+                }
+            }
+        }
+
         Event event   = {};
-        event.kind    = EventKind::Arrival;
         event.subject = thing->id;
         event.target  = thing->move.dest;
         event.cell    = thing->cell_pos;
@@ -1085,22 +1319,13 @@ fn void movement_step(Game* game, MoveDay* day, MoveIntent intent) {
     }
 }
 
-// Placeholder consumption until the interaction system exists: the log is
-// the observer. Records stay in place for tests to inspect.
+// The log is the observer: every consumed event prints as subject, action,
+// target. Records stay in place for tests to inspect.
 fn void event_log(World* world, Event event) {
     String a = resolve_name(world, get(world, event.subject)->name);
     String b = resolve_name(world, get(world, event.target)->name);
-    switch (event.kind) {
-        case EventKind::Nil: break;
-        case EventKind::Meet:
-            LOG("encounter: '%.*s' met '%.*s' at %d,%d", (int)a.len, a.data, (int)b.len, b.data, event.cell.x,
-                event.cell.y);
-            break;
-        case EventKind::Arrival:
-            LOG("arrival: '%.*s' reached '%.*s' at %d,%d", (int)a.len, a.data, (int)b.len, b.data, event.cell.x,
-                event.cell.y);
-            break;
-    }
+    LOG("event: '%.*s' -> '%.*s' (action %d) at %d,%d", (int)a.len, a.data, (int)b.len, b.data, (int)event.action,
+        event.cell.x, event.cell.y);
 }
 
 // --- Validation ---------------------------------------------------------------
@@ -1254,31 +1479,93 @@ struct TickCommands {
 // commands while this holds, but suppress time advance. The UI should act accordingly
 fn b32 forced_pause(const Game* game) { return game->world.interaction.active; }
 
-// Raise the player's collision prompt: choices derive from what the target
-// affords (enterable → Enter; otherwise a greeting). An already-open
-// interaction wins — later collisions this tick still reach the event log,
-// they just don't prompt. The scratch only backs the formatted description;
-// the Interaction copies everything into World.
-fn void prompt_collision(World* world, EventKind kind, Id subject, Id target_id, Arena* scratch) {
+// One text instance: space-joined into the running description.
+fn void interaction_add_text(Interaction* interaction, String tmpl, Slice<TemplateVar> vars) {
+    if (interaction->description.len) { append(&interaction->description, " "); }
+    interpolate(&interaction->description, tmpl, vars);
+}
+
+// One choice instance, acting on `target`. False when the choice list is
+// full — the instances already offered stand.
+fn b32 interaction_add_choice(Interaction* interaction, const ChoiceDef* def, Id target, Slice<TemplateVar> vars) {
+    if (!push(&interaction->choices, {})) return false;
+    Choice* choice = &interaction->choices[interaction->choices.len - 1];
+    interpolate(&choice->text, def->text, vars);
+    choice->action = def->action;
+    choice->target = target;
+    choice->toggle = ChoiceToggle::Enabled;
+    return true;
+}
+
+// Start the player's meeting interaction by composing the fragment sea
+// over the computed facts: every matching text record concatenates into
+// the description (file order, space-joined), every matching choice record
+// is offered. A scoped record expands into one instance per element of its
+// set, the instance's $TARGET and action target being that element.
+// Meetings are unordered collisions and interactions are written from the
+// player's POV: the subject is always the player, the target the other
+// party, whoever stepped into whom. The title is the target's name —
+// computed, not authored. An already-open interaction wins — later
+// meetings this tick still reach the event log, they just don't start
+// one. The gate counts INSTANCES (a scoped record over an empty set
+// contributes none): a meeting with no text or no choices is a content
+// gap — LOG, and the zeroed interaction rolls back (one without choices
+// could never be resolved). Composition walks children_of, so it must run
+// where the hierarchy is fresh.
+fn void interaction_start(Game* game, Id subject, Id target_id) {
+    World* world = &game->world;
     if (world->interaction.active) return;
     const Thing* target = get(world, target_id);
     if (!target->id) return;
 
-    String       name        = resolve_name(world, target->name);
+    u8     target_kind  = target->body_kind_idx;
+    String target_name  = resolve_name(world, target->name);
+    String subject_name = resolve_name(world, get(world, subject)->name);
+
     Interaction* interaction = &world->interaction;
     interaction->active      = true;
     interaction->subject     = subject;
     interaction->target      = target_id;
-    interaction->title       = name;
-    const char* verb         = kind == EventKind::Arrival ? "You have reached" : "You have met";
-    interaction->description = string::format(scratch, "%s %.*s.", verb, (int)name.len, name.data);
+    interaction->title       = target_name;
 
-    if (BODY_KINDS[target->body_kind_idx].enterable) {
-        add_choice(interaction, "Enter", Action::Enter, ChoiceToggle::Enabled);
-    } else {
-        add_choice(interaction, "Greet", Action::Meet, ChoiceToggle::Enabled);
+    usize text_count = 0;
+    for (const TextDef& def : game->interactions.texts) {
+        if (!trigger_accepts(def.trigger, target_kind)) continue;
+        if (def.scope == Scope::Occupants) {
+            for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
+                TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
+                interaction_add_text(interaction, def.text, slice(vars));
+                text_count++;
+            }
+        } else {
+            TemplateVar vars[] = {{"TARGET", target_name}, {"SUBJECT", subject_name}};
+            interaction_add_text(interaction, def.text, slice(vars));
+            text_count++;
+        }
     }
-    add_choice(interaction, "Move on", Action::Nil, ChoiceToggle::Enabled);
+
+    b32 choices_full = false;
+    for (const ChoiceDef& def : game->interactions.choices) {
+        if (!trigger_accepts(def.trigger, target_kind)) continue;
+        if (def.scope == Scope::Occupants) {
+            for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
+                TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
+                choices_full = !interaction_add_choice(interaction, &def, element->id, slice(vars)) || choices_full;
+            }
+        } else {
+            TemplateVar vars[] = {{"TARGET", target_name}, {"SUBJECT", subject_name}};
+            choices_full       = !interaction_add_choice(interaction, &def, target_id, slice(vars)) || choices_full;
+        }
+    }
+    if (choices_full) { LOG("interaction: choice list full — instances dropped"); }
+
+    if (!text_count || !interaction->choices.len) {
+        const BodyKind* body = &BODY_KINDS[target_kind];
+        LOG("interaction: no %s for a meeting with kind '%.*s'", text_count ? "choices" : "text", (int)body->name.len,
+            body->name.data);
+        world->interaction = {};
+        return;
+    }
 }
 
 // Execute one Action with subject acting on target — the single interpreter
@@ -1289,7 +1576,18 @@ fn void action_execute(Game* game, Action action, Id subject, Id target) {
     World* world = &game->world;
     switch (action) {
         case Action::Nil: break;
-        case Action::Meet: break; // placeholder — no consequences yet
+        case Action::Meet: {
+            // Meeting is symmetric: whichever side the player is on, the
+            // queued interaction is player-first (started once the tick
+            // settles). Meetings without the player have no consequences
+            // yet.
+            Id other = {};
+            if (subject == world->player) other = target;
+            if (target == world->player) other = subject;
+            if (other && !push(&game->pending_interactions, {world->player, other})) {
+                LOG("interaction: pending queue full — meeting dropped");
+            }
+        } break;
         case Action::Enter: {
             Thing* anchor = resolve_map_anchor(world, target);
             if (anchor->id && BODY_KINDS[anchor->body_kind_idx].enterable) {
@@ -1330,10 +1628,13 @@ fn void tick(Game* game, TickCommands commands) {
         } else if (interaction->choices[interaction_choice_idx - 1].toggle == ChoiceToggle::Disabled) {
             LOG("game: choose %d is disabled, dropped", interaction_choice_idx);
         } else {
-            Choice choice = interaction->choices[interaction_choice_idx - 1];
-            action_execute(game, choice.action, interaction->subject, interaction->target);
-            // Every resolved choice closes the interaction.
+            // Copy out, close, then execute: every resolved choice closes
+            // the interaction, and the action may queue the NEXT one
+            // (Meet), started once the tick settles below.
+            Choice choice      = interaction->choices[interaction_choice_idx - 1];
+            Id     subject     = interaction->subject;
             world->interaction = {};
+            action_execute(game, choice.action, subject, choice.target);
         }
     }
 
@@ -1378,18 +1679,14 @@ fn void tick(Game* game, TickCommands commands) {
                 movement_step(game, &day, intent);
             }
 
-            // Consume the day's events: the player's collisions prompt, NPC
-            // arrivals execute their order's carried intent, everything logs.
+            // Consume the day's events, uniformly: execute each event's
+            // action, log it. The kind is the record's label, never a
+            // dispatch axis — a meeting's consequence rides the action
+            // channel like any other (Meet events carry Action::Meet).
+            // Effects mutate freely here; interactions start against the
+            // settled world below.
             for (Event& event : game->events) {
-                if (event.subject == world->player) {
-                    prompt_collision(world, event.kind, event.subject, event.target, &game->arena);
-                } else if (event.kind == EventKind::Meet && event.target == world->player) {
-                    // Being walked into is a collision too — the prompt's
-                    // subject is always the player, target the other party.
-                    prompt_collision(world, event.kind, event.target, event.subject, &game->arena);
-                } else if (event.kind == EventKind::Arrival) {
-                    action_execute(game, event.action, event.subject, event.target);
-                }
+                action_execute(game, event.action, event.subject, event.target);
                 event_log(world, event);
             }
         }
@@ -1399,7 +1696,16 @@ fn void tick(Game* game, TickCommands commands) {
         // Mutations stop here: derived indexes catch up before anyone reads them.
         hierarchy_refresh(game);
 
-        // An open prompt holds time: the remaining requested days are
+        // The queued meetings start their interactions against the settled
+        // world. The first to open wins the tick (interaction_start keeps
+        // an already-open one); a queued party may have despawned
+        // meanwhile, and composition rides that safely.
+        for (PendingInteraction& start : game->pending_interactions) {
+            interaction_start(game, start.subject, start.target);
+        }
+        clear(&game->pending_interactions);
+
+        // An open interaction holds time: the remaining requested days are
         // dropped, not queued — the pump re-requests once it resolves.
         if (forced_pause(game)) { break; }
     }
@@ -1627,6 +1933,10 @@ fn void initialize(Arena* arena, Game* game) {
     // arena parameter is the FRAME arena and dies with the first frame.
     if (!game->arena.base) { arena::reserve(&game->arena, GAME_ARENA_SIZE); }
     spatial_initialize(&game->spatial, &world->world_map, &game->arena);
+
+    for (String problem : interactions_load(&game->interactions, "data/interactions.txt")) {
+        LOG("interactions: %.*s", (int)problem.len, problem.data);
+    }
 
     // The setup tree is only read here: a scratch watermark reclaims the file
     // bytes and nodes on return. Names survive by copy into the name buffer.

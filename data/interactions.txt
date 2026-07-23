@@ -1,0 +1,48 @@
+# Meeting prompts as a sea of fragments, compiled at load (src/game.hpp,
+# interactions_*). Prompts fire when the player MEETS something — a
+# symmetric collision, written from the player's POV: $TARGET is the other
+# party, $SUBJECT the player. Two record kinds: `text` records concatenate
+# into the prompt's description (file order, space-joined); `choice`
+# records union into its choice list (file order). A trigger's named
+# fields must each equal the computed fact (AND); an absent field matches
+# anything. The prompt's title is the target's name. Press R in-game to
+# hot-reload.
+
+text = {
+	text = "You have reached $TARGET."
+}
+
+text = {
+	trigger = { target_kind = town }
+	text = "It is a town"
+}
+
+# One instance per thing inside the town: scope names a code-computed set,
+# and each instance's $TARGET (and its action's target) is that element.
+text = {
+	trigger = { target_kind = town }
+	scope = occupants
+	text = "$TARGET is here."
+}
+
+choice = {
+	trigger = { target_kind = town }
+	scope = occupants
+	text = "Greet $TARGET"
+	action = meet
+}
+
+choice = {
+	trigger = { target_kind = town }
+	text = "Enter"
+	action = enter
+}
+
+choice = {
+	trigger = { target_kind = person }
+	text = "Greet"
+}
+
+choice = {
+	text = "Move on"
+}

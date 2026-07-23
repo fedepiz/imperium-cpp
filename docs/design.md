@@ -143,11 +143,85 @@ otherwise.
   dropped, not queued.
 - Meeting a town IS the entry prompt: stepping onto its cell fires the Meet,
   whose prompt offers Enter. A prompt declined leaves you standing on the
-  cell; re-targeting the town produces a zero-length arrival and a fresh
+  cell; re-targeting the town completes as a zero-length arrival, which
+  still emits the Meet (see *Data-driven interactions*) and re-opens the
   prompt.
 - Camera follows the player's map anchor (presentation only); manual pan
   breaks into free look; one key re-engages follow. ZII: the zero camera
   follows.
+- An open travel picker holds time exactly like an interaction, but from the
+  app side: the pump feeds zero elapsed while the panel shows. Both are
+  decisions the world waits on; commands still drain.
+
+## Data-driven interactions
+
+Decided 2026-07-23. **Data names things, code computes things.**
+`data/interactions.txt` is a sea of fragment records compiled at load into
+typed defs living on Game (content, like BODY_KINDS — never in World: saves
+carry no content, replays run against edited files).
+
+    text = {
+        trigger = { target_kind = town }
+        text = "It is a town"
+    }
+    choice = {
+        trigger = { target_kind = town }
+        text = "Enter"
+        action = enter
+    }
+
+- A trigger is a flat record of facts the sim computed: every named field
+  must equal its fact (AND); an absent/zero field matches anything. No
+  expressions, no boolean operators — ever. New expressiveness means new
+  code-computed fact fields, not a query language.
+- **Fragments compose instead of bundling** (revised the same day from a
+  first-match bundle design: description verb x target affordance forced
+  N x M bundles). Every matching `text` record concatenates into the
+  interaction's description (file order, space-joined); every matching
+  `choice` record is offered (file order). Orthogonal content dimensions
+  stay N + M records.
+- The interaction's title is the target's name — computed, not authored. It
+  never varied in practice; a title record kind can return if content
+  earns it.
+- Choices name Actions from the one flat vocabulary (action_from_name);
+  templates interpolate a closed, code-provided var set ($TARGET, $SUBJECT)
+  at fire time, appended straight into the World's Interaction.
+- An interaction starts only when at least one text AND at least one
+  choice instance composed; anything else is a LOGged content gap, every
+  occurrence — a choiceless interaction could never be resolved, and
+  one-shot suppression state would have to live in World.
+- Unknown actions, kinds, and fields are load problems, and a record whose
+  trigger had one is dropped whole — a typo must not silently widen a
+  fragment onto every interaction. R hot-reloads the file alongside the UI.
+- **Meets are the only interaction source** (decided 2026-07-23, retiring
+  a brief `event = meet|arrival` trigger fact). A Meet is the social fact
+  — two things colliding, symmetric; an Arrival is order lifecycle (clear
+  the order, run NPC carried intent) and starts nothing by itself.
+  Interactions are written from the player's POV: the subject is always
+  the player and $TARGET the other party, whichever side stepped into
+  whom. Meets never start interactions mid-event-consumption — events
+  mutate freely, so the player's meetings QUEUE (several may, in one day)
+  and start against the settled world; the first to open wins the tick.
+- **A zero-length arrival emits a Meet**: an order deliberately engages
+  its goal, so completing it is contact even when the pair were already
+  co-located (the day-start companion rule would otherwise suppress it,
+  stranding a player who declined a town's interaction outside forever). The
+  rule that falls out: every completed order ends in a Meet with its goal
+  anchor, or cancels.
+- **`scope` names a code-computed set** (decided 2026-07-23 — the UI's
+  list-template pattern: data declares a template, code supplies the
+  rows). `scope = occupants` expands a fragment into one instance per
+  thing contained in the interaction's target, in slot order (deterministic,
+  replay-safe). An instance's $TARGET and its choice's action target are
+  that element — "Greet $TARGET" per resident. Iteration lives in code;
+  data names the set. Scoped records over an empty set contribute
+  nothing; the start gate counts instances, not records.
+- Runtime choices carry their own action target, filled at composition
+  (the interaction's target for plain records, the element for scoped
+  ones). Action::Meet is the engagement verb: the player's Meet queues an
+  interaction with the action's target, started at the same settle point
+  as event meetings — command-driven, so it rides the replay log with no
+  synthetic events. This is also the conversation-opening seam.
 
 ## Saves
 

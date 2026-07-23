@@ -195,6 +195,12 @@ template <typename T, const usize N> fn Slice<T> slice(DynArray<T, N>* array) {
     return {array->len, array->data};
 }
 
+// View of a whole C array; the count comes from the type, never a hand-kept
+// number that can drift from the initializer.
+template <typename T, const usize N> fn Slice<T> slice(T (&array)[N]) {
+    return {N, array};
+}
+
 // All-or-nothing like push: when the items don't all fit, nothing is appended.
 template <typename T, const usize N> fn b32 append(DynArray<T, N>* array, Slice<T> items) {
     if (items.len > N - array->len) return false;
