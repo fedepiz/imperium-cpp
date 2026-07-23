@@ -1584,14 +1584,33 @@ fn b32 interaction_add_choice(Interaction* interaction, const ChoiceDef* def, Id
     return true;
 }
 
+// One instance of a scope's set: the element itself, plus the variable
+// rows every fragment spliced for this instance resolves against.
+struct ScopeEntry {
+    Id                 target;
+    Slice<TemplateVar> vars;
+};
+
+// The rows one instance resolves against — this function owns the variable
+// vocabulary: adding a variable is one more push here, nowhere else.
+fn ScopeEntry scope_entry_make(Arena* arena, Id target, String target_name, String subject_name) {
+    auto rows = vec::make_vec<TemplateVar>(arena, 2);
+    vec::push(&rows, {"TARGET", target_name});
+    vec::push(&rows, {"SUBJECT", subject_name});
+    ScopeEntry entry = {};
+    entry.target = target;
+    entry.vars   = vec::slice(rows);
+    return entry;
+}
+
 // Start the player's meeting interaction by composing the fragment sea
 // over the computed facts: every matching text record concatenates into
 // the description (file order, space-joined), every matching choice record
 // is offered. A record expands into one instance per element of its
 // scope's set, the instance's $TARGET and action target being that
-// element: scopes are instantiated once up front — entries grouped per
-// scope, each carrying its variable rows — and every def walks its
-// scope's run. Meetings are unordered collisions and interactions are
+// element: scopes are instantiated once up front — each scope's run
+// owning its entries, each entry its variable rows — and every def walks
+// its scope's run. Meetings are unordered collisions and interactions are
 // written from the player's POV: the subject is always the player, the
 // target the other party, whoever stepped into whom. The title is the
 // target's name — computed, not authored. An already-open interaction
@@ -1621,38 +1640,21 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     ScratchArena scratch(&game->arena);
     Slice<Fact>  facts = facts_compute(world, &game->arena);
 
-    // One instance of a scope's set: the element itself, plus the variable
-    // rows every fragment spliced for this instance resolves against.
-    struct ScopeEntry {
-        Id                 target;
-        Slice<TemplateVar> vars;
-    };
+    // Instantiate the scopes: each run owns its entries — Root's is the
+    // target itself, Occupants' one per occupant in hierarchy order — so a
+    // def finds its instances by lookup. runs[Nil] stays the empty ZII vec:
+    // a zeroed def matches nothing.
+    ChildrenView<Thing> occupants = children_of(game, Hierarchy::LocationOf, target_id);
 
-    // Instantiate the scopes, in enum order: Root's one entry, then one per
-    // occupant in hierarchy order. runs[s] views scope s's group, so a def
-    // finds its instances by lookup; runs[Nil] stays empty — a zeroed def
-    // matches nothing.
-    ChildrenView<Thing> occupants   = children_of(game, Hierarchy::LocationOf, target_id);
-    usize               entry_count = 1 + occupants.len;
-    ScopeEntry*         entries     = arena::allocate<ScopeEntry>(&game->arena, entry_count);
-    TemplateVar*        vars        = arena::allocate<TemplateVar>(&game->arena, entry_count * 2);
+    Array<vec::Vec<ScopeEntry>, (usize)Scope::Count> runs = {};
+    runs[(usize)Scope::Root]      = vec::make_vec<ScopeEntry>(&game->arena, 1);
+    runs[(usize)Scope::Occupants] = vec::make_vec<ScopeEntry>(&game->arena, occupants.len);
 
-    entries[0].target = target_id;
-    entries[0].vars   = {2, vars};
-    vars[0]           = {"TARGET", target_name};
-    vars[1]           = {"SUBJECT", subject_name};
-    usize filled      = 1;
+    vec::push(&runs[(usize)Scope::Root], scope_entry_make(&game->arena, target_id, target_name, subject_name));
     for (Thing* element : occupants) {
-        vars[filled * 2 + 0]   = {"TARGET", resolve_name(world, element->name)};
-        vars[filled * 2 + 1]   = {"SUBJECT", subject_name};
-        entries[filled].target = element->id;
-        entries[filled].vars   = {2, vars + filled * 2};
-        filled++;
+        vec::push(&runs[(usize)Scope::Occupants],
+                  scope_entry_make(&game->arena, element->id, resolve_name(world, element->name), subject_name));
     }
-
-    Array<Slice<ScopeEntry>, (usize)Scope::Count> runs = {};
-    runs[(usize)Scope::Root]                           = {1, entries};
-    runs[(usize)Scope::Occupants]                      = {occupants.len, entries + 1};
 
     usize text_count = 0;
     for (const TextDef& def : game->interactions.texts) {
