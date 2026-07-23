@@ -224,7 +224,7 @@ int main() {
         ray::fill_rect({-40, -40, 80, 80}, {255, 0, 0, 255}, 0);
         ray::camera_end();
 
-        // render_clay_commands(ui_commands);
+        render_clay_commands(ui_commands);
         ray::frame_end();
 
         arena::reset(&frame_arena);
