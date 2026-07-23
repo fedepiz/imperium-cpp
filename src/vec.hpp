@@ -59,7 +59,7 @@ template <typename T> fn void grow(Vec<T>* vec, usize new_capacity) {
 
 } // namespace
 
-template <typename T> fn Vec<T> make_vec(arena::Arena* arena, usize capacity) {
+template <typename T> fn Vec<T> make(arena::Arena* arena, usize capacity) {
     Vec<T> result   = {};
     result.arena    = arena;
     result.capacity = capacity;
@@ -69,7 +69,7 @@ template <typename T> fn Vec<T> make_vec(arena::Arena* arena, usize capacity) {
 }
 
 template <typename T> fn Vec<T> vec_from_slice(arena::Arena* arena, Slice<T> slice) {
-    Vec<T> result = make_vec<T>(arena, slice.len);
+    Vec<T> result = make<T>(arena, slice.len);
     if (result.capacity < slice.len) return result; // allocation failed — empty vec
     if (slice.len) memcpy(result.data, slice.data, slice.len * sizeof(T));
     result.len = slice.len;
@@ -112,6 +112,19 @@ template <typename T> fn void pop(Vec<T>* vec) {
 
 template <typename T> fn void clear(Vec<T>* vec) {
     vec->len = 0;
+}
+
+// Pointer to the last element; null when empty. Valid until the next push —
+// growth may relocate the vec.
+template <typename T> fn T* last(Vec<T> vec) {
+    if (vec.len == 0) return nullptr;
+    return &vec.data[vec.len - 1];
+}
+
+// last, but an empty vec gains a zeroed element first — never null.
+template <typename T> fn T* last_or_push(Vec<T>* vec) {
+    if (vec->len == 0) push(vec, T{});
+    return &vec->data[vec->len - 1];
 }
 
 } // namespace vec

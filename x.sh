@@ -62,7 +62,7 @@ third_party_if_needed() {
     # Vendored library sources are effectively frozen — staleness only tracks
     # our own third_party files. After editing vendored code, run
     # `./x.sh third_party` by hand.
-    [[ -f $a && ! third_party/build.sh -nt $a && ! third_party/clay_impl.c -nt $a ]] && return 0
+    [[ -f $a && ! third_party/build.sh -nt $a && ! third_party/clay_impl.cpp -nt $a ]] && return 0
     cmd_third_party
 }
 

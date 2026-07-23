@@ -98,7 +98,7 @@ rem ------------------------------------------------------------ subroutines
 rem Vendored library sources are effectively frozen -- staleness only tracks
 rem our own third_party files. After editing vendored code, run
 rem `x.bat third_party` by hand.
-powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; if((Get-Item 'third_party/clay_impl.c').LastWriteTime -gt $t){exit 0}; exit 1"
+powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; if((Get-Item 'third_party/clay_impl.cpp').LastWriteTime -gt $t){exit 0}; exit 1"
 if !errorlevel! EQU 0 (
     call third_party\build.bat
     if errorlevel 1 exit /b 1

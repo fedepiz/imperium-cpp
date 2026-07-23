@@ -188,7 +188,7 @@ fn ParseError make_error(Parser* p, ErrorKind kind) {
         }
     }
 
-    vec::Vec<char> message = vec::make_vec<char>(p->arena, 0);
+    vec::Vec<char> message = vec::make<char>(p->arena, 0);
     push_u32(&message, line);
     vec::push(&message, ':');
     push_u32(&message, col);
@@ -234,7 +234,7 @@ TermResult parse_item(Parser* p, u32 depth);
 // and skipped instead). Infallible: item errors are recorded and recovered
 // from.
 fn Slice<Node> parse_items(Parser* p, u32 depth) {
-    vec::Vec<Node> items = vec::make_vec<Node>(p->arena, 0);
+    vec::Vec<Node> items = vec::make<Node>(p->arena, 0);
     while (true) {
         skip_trivia(p);
         if (p->pos >= p->text.len) break;
@@ -282,7 +282,7 @@ fn TermResult parse_term(Parser* p, u32 depth) {
     if (b == '"') {
         p->pos += 1;
         usize          chunk_start = p->pos;
-        vec::Vec<char> text        = vec::make_vec<char>(p->arena, 0);
+        vec::Vec<char> text        = vec::make<char>(p->arena, 0);
         while (p->pos < p->text.len) {
             char c = p->text.data[p->pos];
             if (c == '"') {
@@ -372,7 +372,7 @@ fn ParseResult parse(arena::Arena* arena, String src) {
     Parser p = {};
     p.text   = src;
     p.arena  = arena;
-    p.errors = vec::make_vec<ParseError>(arena, 0);
+    p.errors = vec::make<ParseError>(arena, 0);
 
     ParseResult result   = {};
     result.root.kind     = Kind::Block;

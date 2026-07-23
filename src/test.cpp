@@ -74,7 +74,7 @@ fn b32 test_vec() {
     for (i32 v : zero) { (void)v; CHECK(false); } // ZII vec iterates nothing
     vec::clear(&zero);
 
-    vec::Vec<i32> v = vec::make_vec<i32>(&a, 4);
+    vec::Vec<i32> v = vec::make<i32>(&a, 4);
     for (i32 i = 0; i < 1000; ++i) vec::push(&v, i);
     CHECK(v.len == 1000 && v.capacity >= 1000);
     CHECK((u8*)v.data == a.base); // sole tail allocation: growth stayed in place
@@ -97,12 +97,12 @@ fn b32 test_vec() {
     CHECK(w.len == 6 && w[3] == 5 && w[5] == 7);
 
     struct Pair { u64 k, v; };
-    vec::Vec<Pair> pairs = vec::make_vec<Pair>(&a, 0);
+    vec::Vec<Pair> pairs = vec::make<Pair>(&a, 0);
     for (u64 i = 0; i < 100; ++i) vec::push(&pairs, {i, i * i});
     CHECK(pairs[99].v == 99 * 99 && ((usize)pairs.data % alignof(Pair)) == 0);
 
     arena::Arena  dead   = {};
-    vec::Vec<i32> broken = vec::make_vec<i32>(&dead, 16);
+    vec::Vec<i32> broken = vec::make<i32>(&dead, 16);
     CHECK(broken.len == 0 && broken.capacity == 0 && broken.data == 0); // ZII soft-fail
 
     arena::release(&a);

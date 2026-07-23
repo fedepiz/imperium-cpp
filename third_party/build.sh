@@ -8,9 +8,11 @@ cd "$(dirname "$0")"
 # raylib — its own Makefile; produces raylib/src/libraylib.a
 make -C raylib/src PLATFORM=PLATFORM_DESKTOP
 
-# clay — header-only; instantiate the implementation once
+# clay — header-only; instantiate the implementation once. Built as C++ to
+# match the TUs that include clay.h: packed-enum layout differs between C and
+# C++ on MSVC-ABI targets (see clay_impl.cpp).
 mkdir -p build
-clang -std=c99 -O2 -c clay_impl.c -o build/clay_impl.o
+clang++ -std=c++20 -fno-exceptions -fno-rtti -O2 -w -c clay_impl.cpp -o build/clay_impl.o
 
 # merge everything into the one archive
 libtool -static -o third_party.a raylib/src/libraylib.a build/clay_impl.o

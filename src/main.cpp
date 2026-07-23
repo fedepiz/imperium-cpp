@@ -9,6 +9,7 @@
 #include "tabula.hpp"
 #include "vec.hpp"
 #include "clay.h"
+#include "sheet.hpp"
 
 constexpr i32 SCREEN_WIDTH  = 1600;
 constexpr i32 SCREEN_HEIGHT = 900;

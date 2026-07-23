@@ -22,8 +22,10 @@ for %%f in (rcore rshapes rtextures rtext rmodels raudio rglfw) do (
     set "OBJS=!OBJS! build\%%f.o"
 )
 
-rem clay — header-only; instantiate the implementation once
-clang -std=c99 -O2 -c clay_impl.c -o build\clay_impl.o
+rem clay — header-only; instantiate the implementation once. Built as C++ to
+rem match the TUs that include clay.h: packed-enum layout differs between C and
+rem C++ on MSVC-ABI targets (see clay_impl.cpp).
+clang++ -std=c++20 -fno-exceptions -fno-rtti -O2 -w -c clay_impl.cpp -o build\clay_impl.o
 if errorlevel 1 goto :fail
 set "OBJS=!OBJS! build\clay_impl.o"
 

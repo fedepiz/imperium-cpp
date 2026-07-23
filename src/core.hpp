@@ -123,7 +123,7 @@ struct String {
 
     String() = default;
     String(usize len, const char* data) : len{len}, data{data} {}
-    String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
+    constexpr String(const char* cstr) : len{cstr ? strlen(cstr) : 0}, data{cstr} {}
     String(Slice<char> s) : len{s.len}, data{s.data} {}
     template <const usize N> String(const DynString<N>& s);
 
