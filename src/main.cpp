@@ -127,30 +127,43 @@ struct MovingCamera {
 
 struct Command {
     math::V2 camera_translation;
+    b32      quit;
 };
 
 fn void key_input(Command* command) {
+
+    enum Input : u8 {
+        Hold,
+        Press,
+    };
+
     struct Entry {
         ray::Key key;
+        Input    input;
         math::V2 translation;
+        b32      quit;
     };
 
     constexpr Entry TABLE[] = {
-        {ray::Key::W, {0, -1}},
-        {ray::Key::S, {0, 1}},
-        {ray::Key::A, {-1, 0}},
-        {ray::Key::D, {1, 0}},
+        {.key = ray::Key::W, .translation = {0, -1}},
+        {.key = ray::Key::S, .translation = {0, 1}},
+        {.key = ray::Key::A, .translation = {-1, 0}},
+        {.key = ray::Key::D, .translation = {1, 0}},
+        {.key = ray::Key::Escape, .input = Input::Press, .quit = true},
     };
 
-    math::V2 dv = {};
-
     for (const auto& entry : TABLE) {
-        b32 triggered = ray::key_down(entry.key);
-        if (!triggered) { continue; }
-        dv += entry.translation;
-    }
+        b32 triggered = {};
+        switch (entry.input) {
+            case Input::Hold: triggered = ray::key_down(entry.key); break;
+            case Input::Press: triggered = ray::key_pressed(entry.key); break;
+        }
 
-    command->camera_translation = dv;
+        if (!triggered) continue;
+
+        command->camera_translation += entry.translation;
+        command->quit |= entry.quit;
+    }
 }
 
 fn void camera_tick(MovingCamera* camera, const Command* command, f32 delta) {
@@ -193,7 +206,6 @@ int main() {
     camera.inner.offset = config.screen_size / 2;
 
     while (true) {
-        if (ray::key_pressed(ray::Key::Escape)) { break; }
         Command command = {};
         f32     delta   = ray::frame_time();
 
@@ -201,6 +213,7 @@ int main() {
 
         key_input(&command);
 
+        if (command.quit) { break; }
         camera_tick(&camera, &command, delta);
 
         ray::frame_begin();
