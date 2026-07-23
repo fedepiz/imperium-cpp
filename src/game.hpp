@@ -454,9 +454,42 @@ constexpr usize GAME_ARENA_SIZE = 64 * MB; // vmem reserve; committed stays ~9MB
 // affords) stay N + M records instead of N x M bundles.
 
 constexpr usize INTERACTIONS_ARENA_SIZE = 1 * MB;
+constexpr usize MAX_FACTS               = 256;
+
+// A computed statement about the current situation: kind is an index into
+// FACT_DEFS, value its parameter (a body-kind index, a phase, ...). One
+// situation may hold several facts of the same kind — producers emit 0..N.
+// Fact sets and trigger requirements are kept SORTED — matching is one
+// merge walk, and lookups can binary-search the day sets grow.
+struct Fact {
+    u32 kind;
+    u32 value;
+
+    bool operator==(const Fact&) const = default;
+};
+
+fn b32 fact_less(Fact a, Fact b) {
+    if (a.kind != b.kind) return a.kind < b.kind;
+    return a.value < b.value;
+}
+
+// Insertion sort — fine while fact sets stay small, produced only in the
+// two places that own the sortedness invariant (facts_compute,
+// trigger_compile). Revisit alongside the matcher if profiles ever say so.
+fn void facts_sort(Slice<Fact> facts) {
+    for (usize i = 1; i < facts.len; i++) {
+        Fact  fact = facts[i];
+        usize j    = i;
+        while (j > 0 && fact_less(fact, facts[j - 1])) {
+            facts[j] = facts[j - 1];
+            j--;
+        }
+        facts[j] = fact;
+    }
+}
 
 struct TriggerDef {
-    u8 target_kind; // BODY_KINDS index; 0 = any
+    Slice<Fact> required; // sorted; empty = matches anything
 };
 
 // What a fragment record expands over. Nil = one instance, about the
@@ -483,7 +516,7 @@ struct ChoiceDef {
 
 // Content, not state: lives on Game, never in World — saves carry no
 // content, so replays run against whatever the current files say.
-struct Interactions {
+struct InteractionDefs {
     Arena            arena;   // reset by every load; defs and their strings live here
     Slice<TextDef>   texts;   // file order — every matching record contributes
     Slice<ChoiceDef> choices; // file order — every matching record is offered
@@ -553,25 +586,78 @@ fn Scope scope_compile(Arena* arena, vec::Vec<String>* problems, String name) {
     return Scope::Nil;
 }
 
-// Parse one trigger block. Unknown names are problems and mark the record
-// broken — the caller drops it whole, because a typo must not silently
-// widen a fragment onto every interaction.
+// Fact ids are indices into FACT_DEFS, spelled as constants beside their
+// rows; interactions_compile ASSERTs they agree.
+constexpr u32 FACT_TARGET_KIND = 1;
+
+fn u32 fact_parse_body_kind(String name) { return lookup_body_kind(name); }
+
+fn void fact_produce_target_kind(const World* world, vec::Vec<Fact>* out) {
+    const Thing* target = get(world, world->interaction.target);
+    if (target->id) { vec::push(out, {FACT_TARGET_KIND, (u32)target->body_kind_idx}); }
+}
+
+// The fact vocabulary. A def owns both directions: parse_value turns a
+// trigger field's spelled value into the required one (0 = unknown), and
+// produce emits the situation's facts of this kind — 0..N of them — from
+// the World. Adding a fact is one row and its hooks; the matcher, the
+// compile loop, and facts_compute never change.
+struct FactDef {
+    String key; // as trigger fields spell it
+    u32 (*parse_value)(String);
+    void (*produce)(const World*, vec::Vec<Fact>*);
+};
+
+inline const Array<FactDef, 2> FACT_DEFS = {{
+    {}, // slot 0: the nil fact
+    {.key = "target_kind", .parse_value = fact_parse_body_kind, .produce = fact_produce_target_kind},
+}};
+
+// The situation's facts — the one step of composition that reads the
+// World: every def's producer runs against it (the interaction state
+// included, already written into world->interaction). Sorted on return.
+fn Slice<Fact> facts_compute(const World* world, Arena* scratch) {
+    auto facts = vec::make_vec<Fact>(scratch, MAX_FACTS);
+    for (const FactDef& def : FACT_DEFS) {
+        if (def.produce) { def.produce(world, &facts); }
+    }
+    Slice<Fact> set = vec::slice(facts);
+    facts_sort(set);
+    return set;
+}
+
+// Parse one trigger block into its sorted required-fact list. Unknown names
+// are problems and mark the record broken — the caller drops it whole,
+// because a typo must not silently widen a fragment onto every interaction.
 fn b32 trigger_compile(Arena* arena, vec::Vec<String>* problems, const tabula::Node* node, TriggerDef* out) {
-    b32 ok = true;
-    for (const auto& fact : node->children) {
-        if (fact.key == String("target_kind")) {
-            String kind      = fact.value.text;
-            out->target_kind = lookup_body_kind(kind);
-            if (!out->target_kind) {
-                vec::push(problems, string::format(arena, "unknown target_kind '%.*s'", (int)kind.len, kind.data));
-                ok = false;
+    b32  ok       = true;
+    auto required = vec::make_vec<Fact>(arena, 4);
+    for (const auto& field : node->children) {
+        u32 kind = 0;
+        for (u32 index = 1; index < FACT_DEFS.len(); index++) {
+            if (FACT_DEFS[index].key == field.key) {
+                kind = index;
+                break;
             }
-        } else {
+        }
+        if (!kind) {
             vec::push(problems,
-                      string::format(arena, "unknown trigger field '%.*s'", (int)fact.key.len, fact.key.data));
+                      string::format(arena, "unknown trigger field '%.*s'", (int)field.key.len, field.key.data));
+            ok = false;
+            continue;
+        }
+
+        String text  = field.value.text;
+        u32    value = FACT_DEFS[kind].parse_value ? FACT_DEFS[kind].parse_value(text) : 0;
+        if (!value) {
+            vec::push(problems, string::format(arena, "unknown %.*s '%.*s'", (int)field.key.len, field.key.data,
+                                               (int)text.len, text.data));
             ok = false;
         }
+        vec::push(&required, {kind, value});
     }
+    out->required = vec::slice(required);
+    facts_sort(out->required);
     return ok;
 }
 
@@ -579,7 +665,10 @@ fn b32 trigger_compile(Arena* arena, vec::Vec<String>* problems, const tabula::N
 // into) the arena. Every unknown name or field is a problem; a record whose
 // trigger had one is dropped whole. The caller owns the arena reset;
 // problems are arena-allocated and live until the next load.
-fn Slice<String> interactions_compile(Interactions* in, String source) {
+fn Slice<String> interactions_compile(InteractionDefs* in, String source) {
+    // The fact id constants must agree with their FACT_DEFS rows.
+    ASSERT(FACT_DEFS[FACT_TARGET_KIND].key == String("target_kind"));
+
     if (!in->arena.base) { arena::reserve(&in->arena, INTERACTIONS_ARENA_SIZE); }
     Arena* arena    = &in->arena;
     auto   problems = vec::make_vec<String>(arena, 4);
@@ -643,7 +732,7 @@ fn Slice<String> interactions_compile(Interactions* in, String source) {
 
 // (Re)load the defs from a file, replacing whatever was loaded before.
 // A missing or unreadable file leaves no defs and reports one problem.
-fn Slice<String> interactions_load(Interactions* in, String path) {
+fn Slice<String> interactions_load(InteractionDefs* in, String path) {
     if (!in->arena.base) { arena::reserve(&in->arena, INTERACTIONS_ARENA_SIZE); }
     arena::reset(&in->arena);
     in->texts   = {};
@@ -659,9 +748,15 @@ fn Slice<String> interactions_load(Interactions* in, String path) {
     return interactions_compile(in, source.data);
 }
 
-// Does a trigger accept the computed facts? Zero fields accept anything.
-fn b32 trigger_accepts(TriggerDef trigger, u8 target_kind) {
-    return trigger.target_kind == 0 || trigger.target_kind == target_kind;
+// Subset test over two SORTED fact sets — the entire matcher. An empty
+// requirement list asks for nothing and accepts anything.
+fn b32 trigger_accepts(Slice<Fact> required, Slice<Fact> facts) {
+    usize at = 0;
+    for (Fact req : required) {
+        while (at < facts.len && fact_less(facts[at], req)) at++;
+        if (at == facts.len || !(facts[at] == req)) return false;
+    }
+    return true;
 }
 
 // The spatial subsystem: the live "who is where" grid plus the pathfinding
@@ -719,7 +814,7 @@ struct Game {
     DynArray<PendingInteraction, MAX_EVENTS> pending_interactions;
 
     // Loaded content: data/interactions.txt compiled to defs.
-    Interactions interactions;
+    InteractionDefs interactions;
 };
 
 // Rebuild every stale hierarchy index: a counting sort over live things,
@@ -1518,7 +1613,6 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     const Thing* target = get(world, target_id);
     if (!target->id) return;
 
-    u8     target_kind  = target->body_kind_idx;
     String target_name  = resolve_name(world, target->name);
     String subject_name = resolve_name(world, get(world, subject)->name);
 
@@ -1528,9 +1622,14 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     interaction->target      = target_id;
     interaction->title       = target_name;
 
+    // The situation is written; the producers read it back out of the
+    // World. Sifting below is pure set logic.
+    ScratchArena scratch(&game->arena);
+    Slice<Fact>  facts = facts_compute(world, &game->arena);
+
     usize text_count = 0;
     for (const TextDef& def : game->interactions.texts) {
-        if (!trigger_accepts(def.trigger, target_kind)) continue;
+        if (!trigger_accepts(def.trigger.required, facts)) continue;
         if (def.scope == Scope::Occupants) {
             for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
                 TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
@@ -1546,7 +1645,7 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
 
     b32 choices_full = false;
     for (const ChoiceDef& def : game->interactions.choices) {
-        if (!trigger_accepts(def.trigger, target_kind)) continue;
+        if (!trigger_accepts(def.trigger.required, facts)) continue;
         if (def.scope == Scope::Occupants) {
             for (Thing* element : children_of(game, Hierarchy::LocationOf, target_id)) {
                 TemplateVar vars[] = {{"TARGET", resolve_name(world, element->name)}, {"SUBJECT", subject_name}};
@@ -1560,7 +1659,7 @@ fn void interaction_start(Game* game, Id subject, Id target_id) {
     if (choices_full) { LOG("interaction: choice list full — instances dropped"); }
 
     if (!text_count || !interaction->choices.len) {
-        const BodyKind* body = &BODY_KINDS[target_kind];
+        const BodyKind* body = &BODY_KINDS[target->body_kind_idx];
         LOG("interaction: no %s for a meeting with kind '%.*s'", text_count ? "choices" : "text", (int)body->name.len,
             body->name.data);
         world->interaction = {};
@@ -1679,12 +1778,7 @@ fn void tick(Game* game, TickCommands commands) {
                 movement_step(game, &day, intent);
             }
 
-            // Consume the day's events, uniformly: execute each event's
-            // action, log it. The kind is the record's label, never a
-            // dispatch axis — a meeting's consequence rides the action
-            // channel like any other (Meet events carry Action::Meet).
-            // Effects mutate freely here; interactions start against the
-            // settled world below.
+            // Interpret effects. Free mutation is allowed here.
             for (Event& event : game->events) {
                 action_execute(game, event.action, event.subject, event.target);
                 event_log(world, event);

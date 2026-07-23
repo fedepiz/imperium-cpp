@@ -819,7 +819,7 @@ fn b32 test_game_interactions() {
 
     // The schema compiles to typed defs; absent trigger fields stay zero.
     {
-        game::Interactions in     = {};
+        game::InteractionDefs in     = {};
         const char*        source = "text = {\n"
                                     "    trigger = { target_kind = town }\n"
                                     "    text = \"Gates of $TARGET.\"\n"
@@ -833,29 +833,43 @@ fn b32 test_game_interactions() {
                                     "choice = { text = \"Move on\" }\n";
         Slice<String> problems = game::interactions_compile(&in, source);
         CHECK(problems.len == 0 && in.texts.len == 2 && in.choices.len == 2);
-        CHECK(in.texts[0].trigger.target_kind == town);
-        CHECK(in.texts[1].trigger.target_kind == 0);
-        CHECK(in.choices[0].action == game::Action::Enter && in.choices[0].trigger.target_kind == town);
+        CHECK(in.texts[0].trigger.required.len == 1);
+        CHECK((in.texts[0].trigger.required[0] == game::Fact{game::FACT_TARGET_KIND, town}));
+        CHECK(in.texts[1].trigger.required.len == 0);
+        CHECK(in.choices[0].action == game::Action::Enter && in.choices[0].trigger.required.len == 1);
         CHECK(in.choices[1].action == game::Action::Nil);
         arena::release(&in.arena);
     }
 
-    // The trigger contract: named fields must equal the facts; zero fields
-    // accept anything.
+    // The trigger contract: matching is sorted-subset containment. Every
+    // required fact must be present; the empty requirement accepts
+    // anything, including the empty fact set.
     {
-        game::TriggerDef specific = {town};
-        game::TriggerDef anything = {};
-        CHECK(game::trigger_accepts(specific, town));
-        CHECK(!game::trigger_accepts(specific, person));
-        CHECK(game::trigger_accepts(anything, person));
-        CHECK(game::trigger_accepts(anything, 0));
+        game::Fact town_fact   = {game::FACT_TARGET_KIND, town};
+        game::Fact person_fact = {game::FACT_TARGET_KIND, person};
+
+        game::Fact facts_a[] = {town_fact};
+        game::Fact facts_b[] = {person_fact, town_fact};
+        game::facts_sort(slice(facts_b));
+
+        game::Fact       req_town[] = {town_fact};
+        game::Fact       req_both[] = {town_fact, person_fact};
+        game::TriggerDef anything   = {};
+        game::facts_sort(slice(req_both));
+
+        CHECK(game::trigger_accepts(slice(req_town), slice(facts_a)));
+        CHECK(game::trigger_accepts(slice(req_town), slice(facts_b)));
+        CHECK(!game::trigger_accepts(slice(req_both), slice(facts_a))); // person missing
+        CHECK(game::trigger_accepts(slice(req_both), slice(facts_b)));
+        CHECK(game::trigger_accepts(anything.required, slice(facts_a)));
+        CHECK(game::trigger_accepts(anything.required, {}));
     }
 
     // Unknown names are load problems; a record with a broken trigger is
     // dropped whole (a typo must not widen a fragment onto every prompt),
     // while broken non-trigger fields only report.
     {
-        game::Interactions in     = {};
+        game::InteractionDefs in     = {};
         const char*        source = "text = {\n"
                                     "    trigger = { event = meet  target_kind = castle  colour = red }\n"
                                     "    text = \"broken\"\n"
