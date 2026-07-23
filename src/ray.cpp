@@ -117,7 +117,7 @@ fn ::Font font_for(FontId id, i32 size) {
     }
     if (entry->count == MAX_FONT_SIZES) {
         if (!entry->overflow_logged) {
-            LOG("ray: font size budget (%d) exhausted; %d px text draws scaled", (int)MAX_FONT_SIZES, (int)size);
+            LOG("ray: font size budget (", MAX_FONT_SIZES, ") exhausted; ", size, " px text draws scaled");
             entry->overflow_logged = true;
         }
         u32 closest = 0;

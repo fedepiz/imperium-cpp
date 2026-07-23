@@ -10,6 +10,7 @@
 #include "pool.hpp"
 #include "sort.hpp"
 #include "string.hpp"
+#include "tabula.hpp"
 #include "vec.hpp"
 
 
@@ -389,6 +390,154 @@ fn b32 test_file_io() {
     return true;
 }
 
+fn b32 test_tabula() {
+    arena::Arena a = {};
+    arena::reserve(&a, 1024 * 1024);
+
+    // One dense source: comments, escapes, numbers vs dates vs quoted numbers,
+    // every operator, arrays, nesting, duplicate keys, quoted keys, anonymous
+    // blocks, UTF-8.
+    const char* src =
+        "# roster\n"
+        "legion = {\n"
+        "    name = \"Legio \\\"I\\\" Italica\"\n"
+        "    strength = 4800\n"
+        "    morale > 0.5\n"
+        "    founded = 42.3.1\n"
+        "    id = \"12\"\n"
+        "    cohorts = { 1 2 3 }\n"
+        "    camp = { site = roma }\n"
+        "}\n"
+        "legion = { name = \"Legio II\" }\n"
+        "\"anno urbis\" <= -5e-1\n"
+        "x != 1 y >= 2 z < 3\n"
+        "{ 皇帝 = 帝国 }\n";
+
+    // Parse from a buffer we clobber afterwards: the tree must only reference
+    // the arena, never the source.
+    char  buffer[512];
+    usize n = strlen(src);
+    CHECK(n < sizeof(buffer));
+    memcpy(buffer, src, n);
+    tabula::ParseResult r = tabula::parse(&a, String{n, buffer});
+    memset(buffer, 0xDD, sizeof(buffer));
+
+    CHECK(r.errors.len == 0 && r.root.children.len == 7);
+    CHECK(r.root.key.len == 0 && r.root.op == tabula::Op::Nil && r.root.kind == tabula::Kind::Block);
+    Slice<tabula::Node> tops = r.root.children;
+
+    const tabula::Node* legion = &tops[0];
+    CHECK(string::equals(legion->key, "legion") && legion->op == tabula::Op::Eq && legion->kind == tabula::Kind::Block);
+    CHECK(string::equals(tabula::get_text(legion, "name"), "Legio \"I\" Italica")); // escapes resolved
+    CHECK(tabula::get_number(legion, "strength") == 4800.0f);
+    CHECK(tabula::get(legion, "morale")->op == tabula::Op::Gt);
+    tabula::Value founded = tabula::get_value(legion, "founded");
+    CHECK(!founded.is_number && string::equals(founded.text, "42.3.1")); // dates stay text
+    CHECK(!tabula::get_value(legion, "id").is_number);                   // quoted "12" stays text
+    CHECK(tabula::get_number(legion, "name") == 0.0f);                   // text atom is not a number
+
+    const tabula::Node* cohorts = tabula::get(legion, "cohorts");
+    CHECK(cohorts->children.len == 3 && cohorts->children[2].value.number == 3.0f);
+    CHECK(cohorts->children[0].key.len == 0 && cohorts->children[0].op == tabula::Op::Nil);
+    CHECK(tabula::item_number(cohorts, 0) == 1.0f && tabula::item_number(cohorts, 2) == 3.0f);
+    CHECK(tabula::item(cohorts, 3)->kind == tabula::Kind::Atom && tabula::item_value(cohorts, 3).text.len == 0);
+    CHECK(tabula::item_text(tabula::item(legion, 99), 0).len == 0); // indexed chaining through nil stays safe
+    CHECK(tabula::item_number(legion, 0) == 0.0f); // children[0] is the name atom: text, not a number
+    CHECK(string::equals(tabula::get_text(tabula::get(legion, "camp"), "site"), "roma")); // chained get
+
+    usize legions = 0; // duplicate keys: visiting all matches is a plain loop
+    for (usize i = 0; i < tops.len; ++i) {
+        if (string::equals(tops[i].key, "legion")) legions += 1;
+    }
+    CHECK(legions == 2 && string::equals(tabula::get_text(&tops[1], "name"), "Legio II"));
+
+    CHECK(string::equals(tops[2].key, "anno urbis") && tops[2].op == tabula::Op::Le &&
+          tops[2].value.number == -0.5f);
+    CHECK(tops[3].op == tabula::Op::Ne && tops[4].op == tabula::Op::Ge && tops[5].op == tabula::Op::Lt);
+    const tabula::Node* block = &tops[6];
+    CHECK(block->key.len == 0 && block->kind == tabula::Kind::Block);
+    CHECK(string::equals(block->children[0].key, "皇帝") && string::equals(block->children[0].value.text, "帝国"));
+
+    // Missing keys: nil node chains safely and reads as zero.
+    const tabula::Node* nil = tabula::get(tabula::get(legion, "missing"), "worse");
+    CHECK(nil->kind == tabula::Kind::Atom && nil->children.len == 0 && nil->value.text.len == 0);
+    CHECK(tabula::get_number(legion, "missing") == 0.0f && tabula::get_text(legion, "missing").len == 0);
+
+    tabula::Node        zn = {};
+    tabula::ParseResult zr = {};
+    CHECK(zn.op == tabula::Op::Nil && zn.kind == tabula::Kind::Atom && zr.root.children.len == 0 && zr.errors.len == 0);
+
+    // Fallback reads: yes/no and numeric booleans, unrecognized text trips
+    // the fallback, i32 reads reject non-numbers.
+    r = tabula::parse(&a, "flag = yes off = no n = 42 s = word");
+    tabula::Node root = r.root; // POD: the root copies out like any value
+    CHECK(tabula::read_b32(&root, "flag", false) && !tabula::read_b32(&root, "off", true));
+    CHECK(tabula::read_b32(&root, "n", false) && tabula::read_b32(&root, "missing", true));
+    CHECK(!tabula::read_b32(&root, "s", false)); // unrecognized text -> fallback
+    CHECK(tabula::read_i32(&root, "n", 0) == 42 && tabula::read_i32(&root, "s", 7) == 7);
+    CHECK(tabula::read_i32(&root, "missing", 9) == 9);
+
+    arena::release(&a);
+    return true;
+}
+
+fn b32 test_tabula_errors() {
+    arena::Arena a = {};
+    arena::reserve(&a, 1024 * 1024);
+
+    struct Case { const char* src; tabula::ErrorKind kind; };
+    Case cases[] = {
+        {"a = { b = 1", tabula::ErrorKind::UnclosedBlock},
+        {"a = \"oops", tabula::ErrorKind::UnclosedString},
+        {"} b = 1", tabula::ErrorKind::UnexpectedCloseBrace},
+        {"a = }", tabula::ErrorKind::ExpectedValue},
+        {"a =", tabula::ErrorKind::ExpectedValue},
+        {"= 1", tabula::ErrorKind::UnexpectedChar},
+        {"a ! b", tabula::ErrorKind::UnexpectedChar},
+        {"pos = { 8, 3 }", tabula::ErrorKind::UnexpectedComma},
+        {"a = 1, b = 2", tabula::ErrorKind::UnexpectedComma},
+    };
+    for (usize i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        tabula::ParseResult r = tabula::parse(&a, cases[i].src);
+        CHECK(r.errors.len > 0 && r.errors[0].kind == cases[i].kind);
+    }
+
+    // Recovery: positions are exact, good items survive around the bad ones.
+    tabula::ParseResult r = tabula::parse(&a, "a = 1\n= oops\nb = \"unclosed");
+    CHECK(r.errors.len == 2);
+    CHECK(r.errors[0].kind == tabula::ErrorKind::UnexpectedChar && r.errors[0].line == 2 && r.errors[0].col == 1);
+    CHECK(string::equals(r.errors[0].message, "2:1: unexpected character"));
+    CHECK(r.errors[1].kind == tabula::ErrorKind::UnclosedString && r.errors[1].line == 3 && r.errors[1].col == 14 &&
+          r.errors[1].offset == 26);
+    CHECK(string::equals(r.errors[1].message, "3:14: unclosed string"));
+    CHECK(r.root.children.len == 2 && string::equals(r.root.children[0].key, "a") &&
+          string::equals(r.root.children[1].value.text, "oops"));
+
+    r = tabula::parse(&a, "a = { b = 1"); // EOF inside a block keeps the partial tree
+    CHECK(r.errors.len == 1 && r.errors[0].offset == 11 && r.errors[0].col == 12);
+    CHECK(string::equals(tabula::get_text(tabula::get(&r.root, "a"), "b"), "1"));
+
+    // Commas terminate the atom before erroring loudly: "8," never becomes a
+    // silent non-number, and spaced elements survive recovery.
+    r = tabula::parse(&a, "pos = { 8, 3 }");
+    CHECK(r.errors.len == 1 && r.errors[0].kind == tabula::ErrorKind::UnexpectedComma && r.errors[0].col == 10);
+    CHECK(string::equals(r.errors[0].message, "1:10: unexpected ',' — separate with whitespace"));
+    const tabula::Node* pos = tabula::get(&r.root, "pos");
+    CHECK(tabula::item_number(pos, 0) == 8.0f && tabula::item_number(pos, 1) == 3.0f);
+
+    const char* junk[] = {"}}}}", "= = = =", "{{{", "a = = 1", "!!!", "\"", "{ } }", ",,,,", "{8,3}"};
+    for (usize i = 0; i < sizeof(junk) / sizeof(junk[0]); ++i) {
+        CHECK(tabula::parse(&a, junk[i]).errors.len > 0); // errors, never a hang or crash
+    }
+
+    char deep[600];
+    memset(deep, '{', sizeof(deep));
+    r = tabula::parse(&a, String{sizeof(deep), deep});
+    CHECK(r.errors.len > 0 && r.errors[0].kind == tabula::ErrorKind::TooDeep);
+
+    arena::release(&a);
+    return true;
+}
 
 // ------------------------------------------------------------- game spatial
 // Helpers shared by the spatial/pathfinding/movement tests. Terrain index 2
@@ -472,6 +621,8 @@ const Test TESTS[] = {
     {"list", test_list},
     {"string", test_string},
     {"file_io", test_file_io},
+    {"tabula", test_tabula},
+    {"tabula_errors", test_tabula_errors},
     {"math", test_math},
     {"hashtable", test_hashtable},
 };

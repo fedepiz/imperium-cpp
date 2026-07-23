@@ -39,7 +39,8 @@ constexpr usize GB = 1024 * MB;
 #define fn inline
 
 // ASSERT — programmer errors and invariants: traps into the debugger.
-// LOG(fmt, ...) — printf-style logging to stderr; fmt must be a string literal.
+// LOG(a, b, ...) — prints each argument in order with print() to stderr, then
+// a newline. No format string: LOG("loaded ", count, " entities").
 // Both compile to nothing unless ASSERT_ENABLE / LOG_ENABLE is defined (by the
 // root file or the build script), so neither may carry side effects the
 // program depends on.
@@ -60,12 +61,7 @@ constexpr usize GB = 1024 * MB;
 #define ASSERT(cond) ((void)0)
 #endif
 
-#ifdef LOG_ENABLE
-#include <stdio.h>
-#define LOG(fmt, ...) fprintf(stderr, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
-#else
-#define LOG(fmt, ...) ((void)0)
-#endif
+// LOG itself lives below String — its print() overloads need the type.
 
 // Small generic utilities — shallow, call-site obvious.
 
@@ -147,6 +143,44 @@ fn bool operator==(String a, String b) {
     if (a.len == 0 || a.data == b.data) return true;
     return memcmp(a.data, b.data, a.len) == 0;
 }
+
+#ifdef LOG_ENABLE
+#include <stdio.h>
+
+// print — LOG's argument printer: one overload per printable type, all to
+// stderr. A module makes its own type loggable by defining print(T) in the
+// type's namespace — found like an operator overload, by ADL. Note there is
+// no bool overload: pointer -> bool is a standard conversion, so it would
+// steal string literals from the String overload (see b32 above).
+fn void print(String s) {
+    if (s.len) fwrite(s.data, 1, s.len, stderr);
+}
+// Exact match for literals, so no later overload can claim them by a
+// standard conversion.
+fn void print(const char* s) { print(String(s)); }
+fn void print(char c) { fputc(c, stderr); }
+// Integers overload on the fundamental types — the one place the project
+// spells them out: the sized aliases map onto them differently per platform
+// (usize is unsigned long on mac, unsigned long long on windows), so this is
+// what covers every alias exactly once everywhere. i8..i16/u8..u16 arrive
+// through integral promotion to int.
+fn void print(int v) { fprintf(stderr, "%d", v); }
+fn void print(unsigned int v) { fprintf(stderr, "%u", v); }
+fn void print(long v) { fprintf(stderr, "%ld", v); }
+fn void print(unsigned long v) { fprintf(stderr, "%lu", v); }
+fn void print(long long v) { fprintf(stderr, "%lld", v); }
+fn void print(unsigned long long v) { fprintf(stderr, "%llu", v); }
+fn void print(f64 v) { fprintf(stderr, "%g", v); }
+fn void print(f32 v) { print((f64)v); }
+
+template <typename... Args> fn void print_line(Args... args) {
+    (print(args), ...); // comma fold: prints left to right
+    fputc('\n', stderr);
+}
+#define LOG(...) print_line(__VA_ARGS__)
+#else
+#define LOG(...) ((void)0)
+#endif
 
 // Fixed-capacity dynamic array — Vec's shape on embedded storage, no arena.
 // ZII: the all-zero DynArray is a valid empty array. It cannot grow: push

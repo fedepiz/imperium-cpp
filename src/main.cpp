@@ -4,6 +4,7 @@
 #include "math.hpp"
 #include "string.hpp"
 #include "ray.hpp"
+#include "tabula.hpp"
 #include "vec.hpp"
 #include "clay.h"
 
@@ -14,7 +15,9 @@ ray::FontId CLAY_FONT;
 
 // Clay reports configuration and layout problems through this callback; LOG is
 // the whole response — clay recovers internally and the frame carries on.
-fn void clay_error(Clay_ErrorData error) { LOG("clay: %.*s", (int)error.errorText.length, error.errorText.chars); }
+fn void clay_error(Clay_ErrorData error) {
+    LOG("clay: ", String{(usize)error.errorText.length, error.errorText.chars});
+}
 
 // clay measures per word-slice; zero FontId = ray's default-font fallback
 // until Clay fontIds are mapped to loaded fonts. ray::measure_text uses the
@@ -24,14 +27,14 @@ fn Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElementConf
     return {metrics.size.x, metrics.size.y};
 }
 
-fn void clay_init(arena::Arena* arena) {
+fn void clay_init(arena::Arena* arena, math::V2 screen_size) {
     // Clay lays out in one fixed block sized by its current settings (element
     // caps), carved from the eternal arena; it never allocates after init.
     // 64: clay aligns its internal allocations to 64-byte boundaries.
     usize      clay_memory_size = Clay_MinMemorySize();
     Clay_Arena clay_arena =
         Clay_CreateArenaWithCapacityAndMemory(clay_memory_size, arena::allocate_raw(arena, clay_memory_size, 64));
-    Clay_Dimensions clay_dimensions = {(f32)SCREEN_WIDTH, (f32)SCREEN_HEIGHT};
+    Clay_Dimensions clay_dimensions = {screen_size.x, screen_size.y};
     Clay_Initialize(clay_arena, clay_dimensions, {.errorHandlerFunction = clay_error});
     Clay_SetMeasureTextFunction(clay_measure_text, nullptr);
 }
@@ -97,6 +100,24 @@ fn void render_clay_commands(Clay_RenderCommandArray commands) {
     }
 }
 
+tabula::Node parse_tabula_from_file(arena::Arena* arena, String path) {
+    auto read_file = file_io::read_file_to_string(arena, path);
+    for (const auto& error : read_file.messages) {
+        LOG(error.message);
+    }
+
+    auto parse = tabula::parse(arena, read_file.data);
+    for (const auto& error : parse.errors) {
+        LOG(error.message);
+    }
+    return parse.root;
+}
+
+struct Config {
+    math::V2 screen_size;
+    b32      vsync;
+};
+
 int main() {
     arena::Arena frame_arena;
     arena::reserve(&frame_arena, 256 * MB);
@@ -104,9 +125,19 @@ int main() {
     arena::Arena eternal_arena;
     arena::reserve(&eternal_arena, 256 * MB);
 
-    ray::window_open(SCREEN_WIDTH, SCREEN_HEIGHT, "Hello", true);
+    Config config      = {};
+    config.screen_size = {SCREEN_WIDTH, SCREEN_HEIGHT};
 
-    clay_init(&eternal_arena);
+    {
+        auto root            = parse_tabula_from_file(&frame_arena, "data/config.txt");
+        config.screen_size.x = tabula::get_number(&root, "screen_width");
+        config.screen_size.y = tabula::get_number(&root, "screen_height");
+        config.vsync         = tabula::get_bool(&root, "vsync");
+    }
+
+    ray::window_open(config.screen_size.x, config.screen_size.y, "Hello", config.vsync);
+
+    clay_init(&eternal_arena, config.screen_size);
 
     CLAY_FONT = ray::load_font_from_file("assets/fonts/default.ttf", 24).id;
 
