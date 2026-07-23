@@ -10,10 +10,15 @@ struct V2 {
 
     auto operator<=>(const V2&) const = default;
 
-    V2 operator+(V2 other) { return {this->x + other.x, this->y + other.y}; }
-    V2 operator-(V2 other) { return {this->x - other.x, this->y - other.y}; }
-    V2 operator*(f32 v) { return {this->x * v, this->y * v}; }
-    V2 operator/(f32 v) { return {this->x / v, this->y / v}; }
+    V2 operator+(V2 other) const { return {this->x + other.x, this->y + other.y}; }
+    V2 operator-(V2 other) const { return {this->x - other.x, this->y - other.y}; }
+    V2 operator*(f32 v) const { return {this->x * v, this->y * v}; }
+    V2 operator/(f32 v) const { return {this->x / v, this->y / v}; }
+
+    V2& operator+=(V2 other) {
+        *this = *this + other;
+        return *this;
+    }
 };
 
 // ZII: zero is transparent black.

@@ -1,3 +1,5 @@
+#include <math.h>
+
 #include "core.hpp"
 #include "arena.hpp"
 #include "file_io.hpp"
@@ -103,12 +105,12 @@ fn void render_clay_commands(Clay_RenderCommandArray commands) {
 tabula::Node parse_tabula_from_file(arena::Arena* arena, String path) {
     auto read_file = file_io::read_file_to_string(arena, path);
     for (const auto& error : read_file.messages) {
-        LOG(error.message);
+        LOG(path, ":", error.message);
     }
 
     auto parse = tabula::parse(arena, read_file.data);
     for (const auto& error : parse.errors) {
-        LOG(error.message);
+        LOG(path, ":", error.message);
     }
     return parse.root;
 }
@@ -117,6 +119,51 @@ struct Config {
     math::V2 screen_size;
     b32      vsync;
 };
+
+struct MovingCamera {
+    ray::Camera inner;
+    math::V2    velocity;
+};
+
+struct Command {
+    math::V2 camera_translation;
+};
+
+fn void key_input(Command* command) {
+    struct Entry {
+        ray::Key key;
+        math::V2 translation;
+    };
+
+    constexpr Entry TABLE[] = {
+        {ray::Key::W, {0, -1}},
+        {ray::Key::S, {0, 1}},
+        {ray::Key::A, {-1, 0}},
+        {ray::Key::D, {1, 0}},
+    };
+
+    math::V2 dv = {};
+
+    for (const auto& entry : TABLE) {
+        b32 triggered = ray::key_down(entry.key);
+        if (!triggered) { continue; }
+        dv += entry.translation;
+    }
+
+    command->camera_translation = dv;
+}
+
+fn void camera_tick(MovingCamera* camera, const Command* command, f32 delta) {
+    constexpr f32 SPEED = 20.;
+
+    camera->velocity += command->camera_translation * SPEED * delta;
+
+    // Exponential drag, frame-rate independent: the same fraction of the
+    // velocity survives each second regardless of frame length.
+    constexpr f32 DECAY = 6.0f; // 1/DECAY s ≈ time to shed ~63% of speed
+    camera->velocity    = camera->velocity * expf(-DECAY * delta);
+    camera->inner.offset += camera->velocity;
+}
 
 int main() {
     arena::Arena frame_arena;
@@ -141,14 +188,30 @@ int main() {
 
     CLAY_FONT = ray::load_font_from_file("assets/fonts/default.ttf", 24).id;
 
+    MovingCamera camera = {};
+    camera.inner.zoom   = 1.0;
+    camera.inner.offset = config.screen_size / 2;
+
     while (true) {
         if (ray::key_pressed(ray::Key::Escape)) { break; }
+        Command command = {};
+        f32     delta   = ray::frame_time();
+
         auto ui_commands = perform_ui();
+
+        key_input(&command);
+
+        camera_tick(&camera, &command, delta);
 
         ray::frame_begin();
         constexpr math::Color BKG_COLOR = math::rgb(28, 30, 38);
         ray::clear(BKG_COLOR);
-        render_clay_commands(ui_commands);
+
+        ray::camera_begin(camera.inner);
+        ray::fill_rect({-40, -40, 80, 80}, {255, 0, 0, 255}, 0);
+        ray::camera_end();
+
+        // render_clay_commands(ui_commands);
         ray::frame_end();
 
         arena::reset(&frame_arena);
