@@ -18,6 +18,18 @@ entity = {
 }
 
 entity = {
+	kind = town
+	name = "Town3"
+	pos = { 3 9 }
+}
+
+entity = {
+	kind = town
+	name = "Town4"
+	pos = { 7 8 }
+}
+
+entity = {
 	kind = person
 	name = "Wanderer"
 	pos = { 9 5 }
