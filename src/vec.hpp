@@ -68,7 +68,7 @@ template <typename T> fn Vec<T> make_vec(arena::Arena* arena, usize capacity) {
     return result;
 }
 
-template <typename T> fn Vec<T> make_vec(arena::Arena* arena, Slice<T> slice) {
+template <typename T> fn Vec<T> vec_from_slice(arena::Arena* arena, Slice<T> slice) {
     Vec<T> result = make_vec<T>(arena, slice.len);
     if (result.capacity < slice.len) return result; // allocation failed — empty vec
     if (slice.len) memcpy(result.data, slice.data, slice.len * sizeof(T));

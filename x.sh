@@ -32,7 +32,7 @@ done
 # parameters, functions) warn without failing the build — stubs keep compiling.
 BASE_FLAGS=(-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror
             -Wno-error=unused -Wno-error=unused-parameter -Wno-reorder-init-list
-            -Ithird_party/raylib/src)
+            -Ithird_party/raylib/src -Ithird_party/clay)
 if (( RELEASE )); then
     FLAGS=($BASE_FLAGS -O2)
     PROFILE=release
@@ -62,7 +62,7 @@ third_party_if_needed() {
     # Vendored library sources are effectively frozen — staleness only tracks
     # our own third_party files. After editing vendored code, run
     # `./x.sh third_party` by hand.
-    [[ -f $a && ! third_party/build.sh -nt $a ]] && return 0
+    [[ -f $a && ! third_party/build.sh -nt $a && ! third_party/clay_impl.c -nt $a ]] && return 0
     cmd_third_party
 }
 

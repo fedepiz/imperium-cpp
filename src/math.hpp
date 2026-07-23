@@ -30,6 +30,8 @@ inline constexpr Color GREEN     = {0, 228, 48, 255};
 inline constexpr Color BLUE      = {0, 121, 241, 255};
 inline constexpr Color DARK_GRAY = {80, 80, 80, 255};
 
+constexpr fn Color rgb(u8 r, u8 g, u8 b) { return {r, g, b, 255}; }
+
 struct Rect {
     f32 x;
     f32 y;
@@ -38,6 +40,8 @@ struct Rect {
 
     auto operator<=>(const Rect&) const = default;
 };
+
+fn V2 corner(Rect rect) { return {rect.x, rect.y}; }
 
 // Half-open on both axes — [x, x+w) — so adjacent rects never double-claim a
 // point, and the ZII empty rect contains nothing.

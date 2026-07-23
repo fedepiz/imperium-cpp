@@ -37,7 +37,7 @@ rem -Wno-reorder-init-list: out-of-order designated init is our style (ZII
 rem PODs; field order at the call site follows meaning, not declaration).
 rem -Wno-error=unused/-Wno-error=unused-parameter: unused names (variables,
 rem parameters, functions) warn without failing the build -- stubs keep compiling.
-set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused -Wno-error=unused-parameter -Wno-missing-designated-field-initializers -Wno-reorder-init-list -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src"
+set "BASE_FLAGS=-std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-error=unused -Wno-error=unused-parameter -Wno-missing-designated-field-initializers -Wno-reorder-init-list -D_CRT_SECURE_NO_WARNINGS -Ithird_party/raylib/src -Ithird_party/clay"
 if !RELEASE!==1 (
     set "FLAGS=!BASE_FLAGS! -O2"
     set "PROFILE=release"
@@ -98,7 +98,7 @@ rem ------------------------------------------------------------ subroutines
 rem Vendored library sources are effectively frozen -- staleness only tracks
 rem our own third_party files. After editing vendored code, run
 rem `x.bat third_party` by hand.
-powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; exit 1"
+powershell -NoProfile -Command "$a='third_party/third_party.a'; if(-not(Test-Path $a)){exit 0}; $t=(Get-Item $a).LastWriteTime; if((Get-Item 'third_party/build.bat').LastWriteTime -gt $t){exit 0}; if((Get-Item 'third_party/clay_impl.c').LastWriteTime -gt $t){exit 0}; exit 1"
 if !errorlevel! EQU 0 (
     call third_party\build.bat
     if errorlevel 1 exit /b 1
